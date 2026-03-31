@@ -10,5 +10,13 @@ module.exports = {
   dataDir: process.env.DATA_DIR || './data',
   companyName: process.env.COMPANY_NAME || 'Gestion de Vacaciones',
   defaultCountryCode: process.env.DEFAULT_COUNTRY_CODE || '591',
-  baseUrl: process.env.BASE_URL || ''
+  baseUrl: process.env.BASE_URL || '',
+
+  mailHost: process.env.MAIL_HOST || '',
+  mailPort: Number(process.env.MAIL_PORT) || 587,
+  mailSecure: String(process.env.MAIL_SECURE || 'false') === 'true',
+  mailUser: process.env.MAIL_USER || '',
+  mailPass: process.env.MAIL_PASS || '',
+  mailFrom: process.env.MAIL_FROM || '',
+  mailTo: process.env.MAIL_TO || ''
 };
