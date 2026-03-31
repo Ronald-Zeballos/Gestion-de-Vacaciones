@@ -2,12 +2,13 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 
-const sessionsPath = path.resolve(config.dataDir, 'sessions.json');
-const requestsPath = path.resolve(config.dataDir, 'requests');
-const employeesPath = path.resolve(config.dataDir, 'employees');
+const baseDataDir = config.dataDir || './data';
+const sessionsPath = path.resolve(baseDataDir, 'sessions.json');
+const requestsPath = path.resolve(baseDataDir, 'requests');
+const employeesPath = path.resolve(baseDataDir, 'employees');
 
 function ensureDirectories() {
-  fs.mkdirSync(config.dataDir, { recursive: true });
+  fs.mkdirSync(baseDataDir, { recursive: true });
   fs.mkdirSync(requestsPath, { recursive: true });
   fs.mkdirSync(employeesPath, { recursive: true });
 
