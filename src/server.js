@@ -1,92 +1,72 @@
-// src/server.js
-const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const config = require('./config');
-const { ensureDirectories } = require('./storage');
-const { processMessage } = require('./bot');
 
-const app = express();
-app.use(express.json());
-ensureDirectories();
+const sessionsPath = path.resolve(config.dataDir, 'sessions.json');
+const requestsPath = path.resolve(config.dataDir, 'requests');
+const employeesPath = path.resolve(config.dataDir, 'employees');
 
-app.get('/health', (req, res) => {
-  res.json({ ok: true, service: 'whatsapp-vacaciones-bot' });
-});
+function ensureDirectories() {
+  fs.mkdirSync(path.dirname(sessionsPath), { recursive: true });
+  fs.mkdirSync(requestsPath, { recursive: true });
+  fs.mkdirSync(employeesPath, { recursive: true });
 
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  if (mode === 'subscribe' && token === config.verifyToken) {
-    return res.status(200).send(challenge);
+  if (!fs.existsSync(sessionsPath)) {
+    fs.writeFileSync(sessionsPath, JSON.stringify({}, null, 2));
   }
-
-  return res.sendStatus(403);
-});
-
-function normalizeIncomingMessage(message) {
-  const from = message.from;
-  const type = message.type;
-
-  let payload = {
-    from,
-    type,
-    text: '',
-    interactiveId: '',
-    interactiveTitle: '',
-    raw: message
-  };
-
-  if (type === 'text') {
-    payload.text = message.text?.body || '';
-  }
-
-  if (type === 'button') {
-    payload.text = message.button?.text || '';
-    payload.interactiveId = message.button?.payload || '';
-  }
-
-  if (type === 'interactive') {
-    const interactiveType = message.interactive?.type;
-
-    if (interactiveType === 'button_reply') {
-      payload.text = message.interactive?.button_reply?.title || '';
-      payload.interactiveId = message.interactive?.button_reply?.id || '';
-      payload.interactiveTitle = message.interactive?.button_reply?.title || '';
-    }
-
-    if (interactiveType === 'list_reply') {
-      payload.text = message.interactive?.list_reply?.title || '';
-      payload.interactiveId = message.interactive?.list_reply?.id || '';
-      payload.interactiveTitle = message.interactive?.list_reply?.title || '';
-    }
-  }
-
-  return payload;
 }
 
-app.post('/webhook', async (req, res) => {
+function readJson(filePath, fallback) {
   try {
-    const entry = req.body?.entry || [];
-
-    for (const changeEntry of entry) {
-      for (const change of changeEntry.changes || []) {
-        const messages = change.value?.messages || [];
-
-        for (const message of messages) {
-          const normalized = normalizeIncomingMessage(message);
-          await processMessage(normalized);
-        }
-      }
-    }
-
-    res.sendStatus(200);
+    if (!fs.existsSync(filePath)) return fallback;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   } catch (error) {
-    console.error('Webhook error:', error.response?.data || error.message || error);
-    res.sendStatus(500);
+    return fallback;
   }
-});
+}
 
-app.listen(config.port, () => {
-  console.log(`Servidor activo en puerto ${config.port}`);
-});
+function writeJson(filePath, value) {
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2), 'utf8');
+}
+
+function getSessions() {
+  ensureDirectories();
+  return readJson(sessionsPath, {});
+}
+
+function getSession(phone) {
+  const sessions = getSessions();
+  return sessions[phone] || null;
+}
+
+function saveSession(phone, session) {
+  const sessions = getSessions();
+  sessions[phone] = session;
+  writeJson(sessionsPath, sessions);
+}
+
+function clearSession(phone) {
+  const sessions = getSessions();
+  delete sessions[phone];
+  writeJson(sessionsPath, sessions);
+}
+
+function saveEmployee(employee) {
+  ensureDirectories();
+  const safeId = String(employee.var_user_name || employee.phone || 'sin_usuario');
+  writeJson(path.join(employeesPath, `${safeId}.json`), employee);
+}
+
+function saveRequest(requestId, payload) {
+  ensureDirectories();
+  writeJson(path.join(requestsPath, `${requestId}.json`), payload);
+}
+
+module.exports = {
+  ensureDirectories,
+  getSession,
+  saveSession,
+  clearSession,
+  saveEmployee,
+  saveRequest
+};
