@@ -2,10 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./config');
 
-const baseDataDir = config.dataDir || './data';
-const sessionsPath = path.resolve(baseDataDir, 'sessions.json');
-const requestsPath = path.resolve(baseDataDir, 'requests');
-const employeesPath = path.resolve(baseDataDir, 'employees');
+const baseDataDir = path.resolve(config.dataDir || './data');
+const sessionsPath = path.join(baseDataDir, 'sessions.json');
+const requestsPath = path.join(baseDataDir, 'requests');
+const employeesPath = path.join(baseDataDir, 'employees');
 
 function ensureDirectories() {
   fs.mkdirSync(baseDataDir, { recursive: true });
@@ -20,8 +20,11 @@ function ensureDirectories() {
 function readJson(filePath, fallback) {
   try {
     if (!fs.existsSync(filePath)) return fallback;
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  } catch {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (!raw || !raw.trim()) return fallback;
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error(`Error leyendo JSON ${filePath}:`, error.message);
     return fallback;
   }
 }
@@ -54,7 +57,8 @@ function clearSession(phone) {
 
 function saveEmployee(employee) {
   ensureDirectories();
-  const safeId = String(employee.var_user_name || employee.phone || 'sin_usuario');
+  const safeId = String(employee.var_user_name || employee.phone || 'sin_usuario')
+    .replace(/[^\w\-]/g, '_');
   writeJson(path.join(employeesPath, `${safeId}.json`), employee);
 }
 

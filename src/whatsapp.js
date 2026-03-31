@@ -1,16 +1,15 @@
-// src/whatsapp.js
 const axios = require('axios');
 const config = require('./config');
 
-async function sendRequest(data) {
+async function sendRequest(payload) {
   if (!config.whatsappToken || !config.phoneNumberId) {
-    console.log('[SIMULADO]', JSON.stringify(data, null, 2));
+    console.log('[SIMULADO] payload saliente:', JSON.stringify(payload, null, 2));
     return;
   }
 
   const url = `https://graph.facebook.com/v23.0/${config.phoneNumberId}/messages`;
 
-  await axios.post(url, data, {
+  await axios.post(url, payload, {
     headers: {
       Authorization: `Bearer ${config.whatsappToken}`,
       'Content-Type': 'application/json'
@@ -21,26 +20,33 @@ async function sendRequest(data) {
 async function sendTextMessage(to, body) {
   return sendRequest({
     messaging_product: 'whatsapp',
+    recipient_type: 'individual',
     to,
     type: 'text',
-    text: { body }
+    text: {
+      preview_url: false,
+      body
+    }
   });
 }
 
 async function sendButtonsMessage(to, body, buttons) {
   return sendRequest({
     messaging_product: 'whatsapp',
+    recipient_type: 'individual',
     to,
     type: 'interactive',
     interactive: {
       type: 'button',
-      body: { text: body },
+      body: {
+        text: body
+      },
       action: {
-        buttons: buttons.map((btn) => ({
+        buttons: buttons.slice(0, 3).map((btn) => ({
           type: 'reply',
           reply: {
             id: btn.id,
-            title: btn.title
+            title: btn.title.slice(0, 20)
           }
         }))
       }
@@ -51,13 +57,16 @@ async function sendButtonsMessage(to, body, buttons) {
 async function sendListMessage(to, body, buttonText, sections) {
   return sendRequest({
     messaging_product: 'whatsapp',
+    recipient_type: 'individual',
     to,
     type: 'interactive',
     interactive: {
       type: 'list',
-      body: { text: body },
+      body: {
+        text: body
+      },
       action: {
-        button: buttonText,
+        button: buttonText.slice(0, 20),
         sections
       }
     }

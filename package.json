@@ -7,6 +7,14 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js"
   },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "vacaciones",
+    "permisos"
+  ],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
     "axios": "^1.8.2",
     "dayjs": "^1.11.13",
