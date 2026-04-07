@@ -2,6 +2,7 @@ const express = require('express');
 const config = require('./config');
 const { ensureDirectories } = require('./storage');
 const { processMessage } = require('./bot');
+const { getUserData, createPtoCase } = require('./luranaApi');
 
 const app = express();
 
@@ -32,11 +33,33 @@ app.get('/webhook', (req, res) => {
   return res.sendStatus(403);
 });
 
+app.get('/test-lurana-user/:username', async (req, res) => {
+  try {
+    const data = await getUserData(req.params.username);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({
+      error: error.response?.data || error.message
+    });
+  }
+});
+
+app.post('/test-lurana-case', async (req, res) => {
+  try {
+    const data = await createPtoCase(req.body);
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({
+      error: error.response?.data || error.message
+    });
+  }
+});
+
 function normalizeIncomingMessage(message) {
   const from = message?.from || '';
   const type = message?.type || '';
 
-  let payload = {
+  const payload = {
     from,
     type,
     text: '',
