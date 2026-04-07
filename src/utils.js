@@ -50,55 +50,6 @@ function calculateWorkingDays(startDateStr, endDateStr) {
   return count;
 }
 
-function calculateHours(startDateTimeStr, endDateTimeStr) {
-  const start = parseDateTime(startDateTimeStr);
-  const end = parseDateTime(endDateTimeStr);
-
-  if (!start || !end) return null;
-  if (!start.isSame(end, 'day')) return null;
-  if (end.isBefore(start)) return null;
-  if (isWeekend(start) || isWeekend(end)) return null;
-
-  const diffMinutes = end.diff(start, 'minute');
-  const hours = diffMinutes / 60;
-
-  if (hours <= 0 || hours > 8) return null;
-
-  return Math.ceil(hours);
-}
-
-function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
-}
-
-function mapTypeRequest(value) {
-  const map = {
-    '1': 'Vacaciones',
-    '2': 'Permiso'
-  };
-  return map[value] || '';
-}
-
-function mapUnit(value) {
-  const map = {
-    '1': 'Días',
-    '2': 'Horas'
-  };
-  return map[value] || '';
-}
-
-function mapPermission(value) {
-  const map = {
-    '1': 'Fallecimiento',
-    '2': 'Cumpleaños',
-    '3': 'Matrimonio',
-    '4': 'Salud',
-    '5': 'Maternidad',
-    '6': 'Otros'
-  };
-  return map[value] || '';
-}
-
 module.exports = {
   DATE_FORMAT,
   DATETIME_FORMAT,
@@ -107,10 +58,5 @@ module.exports = {
   parseDate,
   parseDateTime,
   isWeekend,
-  calculateWorkingDays,
-  calculateHours,
-  isValidEmail,
-  mapTypeRequest,
-  mapUnit,
-  mapPermission
+  calculateWorkingDays
 };
