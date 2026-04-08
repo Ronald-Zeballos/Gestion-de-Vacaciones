@@ -1,30 +1,29 @@
+// src/luranaApi.js
 const axios = require('axios');
-const config = require('./config');
 const { getAccessToken } = require('./luranaAuth');
 
-function apiUrl(path) {
-  return `${config.luranaApiBaseUrl}/api/1.0/${config.luranaWorkspace}${path}`;
+function apiBase() {
+  return `${process.env.LURANA_API_BASE_URL}/api/1.0/${process.env.LURANA_WORKSPACE}`;
 }
 
 async function authHeaders() {
-  return { Authorization: `Bearer ${await getAccessToken()}` };
+  const token = await getAccessToken();
+  return {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json'
+  };
 }
 
 async function getUserData(username) {
-  const { data } = await axios.get(
-    apiUrl(`/plugin-PsManagementTools/getUserData/${encodeURIComponent(username)}`),
-    { headers: await authHeaders() }
-  );
-  return data;
+  const url = `${apiBase()}/plugin-PsManagementTools/getUserData/${encodeURIComponent(username)}`;
+  const response = await axios.get(url, { headers: await authHeaders(), timeout: 15000 });
+  return response.data;
 }
 
 async function createPtoCase(payload) {
-  const { data } = await axios.post(
-    apiUrl('/plugin-PsManagementTools/createPtoCase/'),
-    payload,
-    { headers: { ...(await authHeaders()), 'Content-Type': 'application/json' } }
-  );
-  return data;
+  const url = `${apiBase()}/plugin-PsManagementTools/createPtoCase/`;
+  const response = await axios.post(url, payload, { headers: await authHeaders(), timeout: 20000 });
+  return response.data;
 }
 
 module.exports = { getUserData, createPtoCase };
