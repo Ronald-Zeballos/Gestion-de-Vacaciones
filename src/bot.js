@@ -1,3 +1,4 @@
+const fs = require('fs/promises');
 const { v4: uuidv4 } = require('uuid');
 const config = require('./config');
 const {
@@ -14,12 +15,19 @@ const {
   normalizeText,
   parseDate,
   isWeekend,
-  calculateWorkingDays
+  calculateWorkingDays,
+  describeHttpError
 } = require('./utils');
 const {
   getUserData,
-  createPtoCase
+  createPtoCase,
+  uploadInputDocument,
+  extractAppUid
 } = require('./luranaApi');
+const {
+  getMediaMeta,
+  downloadMediaToTemp
+} = require('./whatsappMedia');
 
 const STEPS = {
   MENU: 'MENU',
@@ -28,6 +36,7 @@ const STEPS = {
   START_DATE: 'START_DATE',
   END_DATE: 'END_DATE',
   REASON: 'REASON',
+  CERT_MED: 'CERT_MED',
   CONFIRM_REQUEST: 'CONFIRM_REQUEST'
 };
 
@@ -42,7 +51,10 @@ function buildInitialSession(phone) {
       startDate: '',
       endDate: '',
       reason: '',
-      requestedDays: 0
+      requestedDays: 0,
+      certMedMediaId: '',
+      certMedMimeType: '',
+      certMedFilename: ''
     }
   };
 }
@@ -62,25 +74,29 @@ function parseApiUser(data) {
 
 function employeeSummary(employee) {
   return [
-    `👤 ${(employee.firstName || employee.userName || '').trim()} ${(employee.lastName || '').trim()}`.trim(),
-    `📧 ${employee.email || ''}`,
-    `🆔 ${employee.userName || ''}`
+    `Empleado: ${(employee.firstName || employee.userName || '').trim()} ${(employee.lastName || '').trim()}`.trim(),
+    `Correo: ${employee.email || ''}`,
+    `Username: ${employee.userName || ''}`
   ].filter(Boolean).join('\n');
 }
 
 function buildRequestSummary(session) {
-  const e = session.employee;
-  const r = session.request;
+  const employee = session.employee;
+  const request = session.request;
+  const certificateStatus = request.certMedMediaId
+    ? `Adjuntado${request.certMedFilename ? `: ${request.certMedFilename}` : ''}`
+    : 'No adjuntado';
 
   return [
-    '📋 Resumen de solicitud',
+    'Resumen de solicitud',
     '',
-    `Empleado: ${(e.firstName || e.userName || '').trim()} ${(e.lastName || '').trim()}`.trim(),
-    `Correo: ${e.email || ''}`,
-    `Fecha inicio: ${r.startDate}`,
-    `Fecha fin: ${r.endDate}`,
-    `Días solicitados: ${r.requestedDays}`,
-    `Motivo: ${r.reason}`
+    `Empleado: ${(employee.firstName || employee.userName || '').trim()} ${(employee.lastName || '').trim()}`.trim(),
+    `Correo: ${employee.email || ''}`,
+    `Fecha inicio: ${request.startDate}`,
+    `Fecha fin: ${request.endDate}`,
+    `Dias solicitados: ${request.requestedDays}`,
+    `Motivo: ${request.reason}`,
+    `Certificado medico: ${certificateStatus}`
   ].join('\n');
 }
 
@@ -106,10 +122,135 @@ function buildCreateCasePayload(employee, request) {
   };
 }
 
+function buildCertificatePrompt() {
+  return [
+    'Adjunta tu certificado medico como documento de WhatsApp.',
+    'Si no aplica, pulsa Omitir o escribe "omitir".'
+  ].join('\n');
+}
+
+function buildCertificateComment(session) {
+  const requestId = session.request?.request_id || 'sin-request-id';
+  const username = session.employee?.userName || 'sin-username';
+  return `Certificado medico recibido por WhatsApp. request_id=${requestId}, user=${username}`;
+}
+
+function buildAttachmentWarning(errorOrDetail) {
+  const detail =
+    errorOrDetail?.status !== undefined || errorOrDetail?.isTimeout !== undefined
+      ? errorOrDetail
+      : describeHttpError(errorOrDetail);
+
+  if (detail.isTimeout) {
+    return 'La solicitud fue creada, pero la subida del certificado excedio el tiempo de espera.';
+  }
+
+  if (detail.status === 401 || detail.status === 403) {
+    return 'La solicitud fue creada, pero Lurana rechazo el adjunto del certificado por autenticacion o permisos.';
+  }
+
+  if (detail.status === 404) {
+    return 'La solicitud fue creada, pero no se encontro el endpoint o el recurso del adjunto en Lurana.';
+  }
+
+  return `La solicitud fue creada, pero no pude adjuntar el certificado (${detail.message}).`;
+}
+
+async function deleteTempFile(filePath) {
+  if (!filePath) return;
+
+  try {
+    await fs.unlink(filePath);
+    console.log('[CERT_MED] Archivo temporal eliminado:', filePath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('[CERT_MED] No se pudo eliminar el archivo temporal:', filePath, error.message);
+    }
+  }
+}
+
+async function moveToConfirmRequest(phone, session) {
+  session.step = STEPS.CONFIRM_REQUEST;
+  saveSession(phone, session);
+
+  await sendButtonsMessage(
+    phone,
+    `${buildRequestSummary(session)}\n\nDeseas registrar la solicitud?`,
+    [
+      { id: 'request_confirm', title: 'Confirmar' },
+      { id: 'cancel_flow', title: 'Cancelar' }
+    ]
+  );
+}
+
+async function attachCertificateIfNeeded(session, appUid) {
+  if (!session.request.certMedMediaId) {
+    return {
+      skipped: true
+    };
+  }
+
+  if (!appUid) {
+    throw new Error('No se pudo extraer app_uid de la respuesta de createPtoCase');
+  }
+
+  if (!config.luranaCertInpDocUid) {
+    throw new Error('LURANA_CERT_INP_DOC_UID is not configured');
+  }
+
+  if (!config.luranaTasUid) {
+    throw new Error('LURANA_TAS_UID is not configured');
+  }
+
+  const mediaId = session.request.certMedMediaId;
+  const metadata = await getMediaMeta(mediaId);
+  let download = null;
+
+  try {
+    console.log('[CERT_MED] Descargando certificado medico:', {
+      appUid,
+      mediaId,
+      filename: session.request.certMedFilename || null,
+      mimeType: session.request.certMedMimeType || metadata.mimeType || null
+    });
+
+    download = await downloadMediaToTemp(
+      metadata.url,
+      session.request.certMedFilename || `certificado-${session.request.request_id}`
+    );
+
+    const upload = await uploadInputDocument(
+      appUid,
+      config.luranaCertInpDocUid,
+      config.luranaTasUid,
+      download.filePath,
+      buildCertificateComment(session)
+    );
+
+    console.log('[CERT_MED] Certificado adjuntado en Lurana:', {
+      appUid,
+      mediaId,
+      appDocUid: upload?.app_doc_uid || null
+    });
+
+    return {
+      skipped: false,
+      metadata,
+      download: {
+        filename: download.filename,
+        size: download.size
+      },
+      upload
+    };
+  } finally {
+    await deleteTempFile(download?.filePath);
+  }
+}
+
 async function sendMainMenu(to) {
   await sendButtonsMessage(
     to,
-    `Hola 👋\nSoy el asistente de *${config.companyName}*.\n\n¿Qué deseas hacer?`,
+    `Hola.\nSoy el asistente de *${config.companyName}*.\n\nQue deseas hacer?`,
     [
       { id: 'menu_start', title: 'Nueva solicitud' },
       { id: 'menu_cancel', title: 'Cancelar' }
@@ -149,7 +290,7 @@ async function processMessage(message) {
 
       session.step = STEPS.USERNAME;
       saveSession(from, session);
-      await sendTextMessage(from, 'Escribe tu *username* corporativo');
+      await sendTextMessage(from, 'Escribe tu username corporativo');
       return;
 
     case STEPS.USERNAME:
@@ -163,7 +304,7 @@ async function processMessage(message) {
         const employee = parseApiUser(apiResponse);
 
         if (!employee) {
-          await sendTextMessage(from, 'No encontré un usuario con ese username. Intenta nuevamente');
+          await sendTextMessage(from, 'No encontre un usuario con ese username. Intenta nuevamente');
           return;
         }
 
@@ -173,14 +314,14 @@ async function processMessage(message) {
 
         await sendButtonsMessage(
           from,
-          `Encontré estos datos:\n\n${employeeSummary(employee)}\n\n¿Son correctos?`,
+          `Encontre estos datos:\n\n${employeeSummary(employee)}\n\nSon correctos?`,
           [
-            { id: 'profile_ok', title: 'Sí' },
+            { id: 'profile_ok', title: 'Si' },
             { id: 'profile_retry', title: 'No' }
           ]
         );
       } catch (error) {
-        console.error('Error consultando getUserData:', error.response?.data || error.message);
+        console.error('[BOT][GET_USER] Error consultando getUserData:', describeHttpError(error));
         await sendTextMessage(from, 'No pude consultar tus datos en este momento');
       }
       return;
@@ -195,20 +336,20 @@ async function processMessage(message) {
       }
 
       if (input !== 'profile_ok') {
-        await sendTextMessage(from, 'Selecciona una opción válida');
+        await sendTextMessage(from, 'Selecciona una opcion valida');
         return;
       }
 
       session.step = STEPS.START_DATE;
       saveSession(from, session);
-      await sendTextMessage(from, 'Escribe la *fecha de inicio* en formato DD-MM-YYYY');
+      await sendTextMessage(from, 'Escribe la fecha de inicio en formato DD-MM-YYYY');
       return;
 
     case STEPS.START_DATE: {
       const start = parseDate(plainText);
 
       if (!start) {
-        await sendTextMessage(from, 'Fecha inválida. Usa DD-MM-YYYY');
+        await sendTextMessage(from, 'Fecha invalida. Usa DD-MM-YYYY');
         return;
       }
 
@@ -221,7 +362,7 @@ async function processMessage(message) {
       session.step = STEPS.END_DATE;
       saveSession(from, session);
 
-      await sendTextMessage(from, 'Escribe la *fecha de fin* en formato DD-MM-YYYY');
+      await sendTextMessage(from, 'Escribe la fecha de fin en formato DD-MM-YYYY');
       return;
     }
 
@@ -230,7 +371,7 @@ async function processMessage(message) {
       const start = parseDate(session.request.startDate);
 
       if (!end || !start) {
-        await sendTextMessage(from, 'Fecha inválida. Usa DD-MM-YYYY');
+        await sendTextMessage(from, 'Fecha invalida. Usa DD-MM-YYYY');
         return;
       }
 
@@ -254,7 +395,7 @@ async function processMessage(message) {
       session.step = STEPS.REASON;
       saveSession(from, session);
 
-      await sendTextMessage(from, 'Escribe el *motivo* de tus vacaciones');
+      await sendTextMessage(from, 'Escribe el motivo de tus vacaciones');
       return;
     }
 
@@ -265,16 +406,52 @@ async function processMessage(message) {
       }
 
       session.request.reason = plainText;
-      session.step = STEPS.CONFIRM_REQUEST;
+      session.step = STEPS.CERT_MED;
       saveSession(from, session);
 
       await sendButtonsMessage(
         from,
-        `${buildRequestSummary(session)}\n\n¿Deseas registrar la solicitud?`,
+        buildCertificatePrompt(),
         [
-          { id: 'request_confirm', title: 'Confirmar' },
+          { id: 'cert_skip', title: 'Omitir' },
           { id: 'cancel_flow', title: 'Cancelar' }
         ]
+      );
+      return;
+
+    case STEPS.CERT_MED:
+      if (message.type === 'document') {
+        if (!message.mediaId) {
+          await sendTextMessage(from, 'Recibi el documento, pero no encontre el mediaId. Intenta reenviarlo');
+          return;
+        }
+
+        session.request.certMedMediaId = message.mediaId;
+        session.request.certMedMimeType = message.mimeType || message.mime_type || '';
+        session.request.certMedFilename = message.filename || '';
+
+        console.log('[CERT_MED] Documento recibido desde WhatsApp:', {
+          phone: from,
+          mediaId: session.request.certMedMediaId,
+          filename: session.request.certMedFilename || null,
+          mimeType: session.request.certMedMimeType || null
+        });
+
+        await moveToConfirmRequest(from, session);
+        return;
+      }
+
+      if (input === 'cert_skip' || inputLower === 'omitir') {
+        session.request.certMedMediaId = '';
+        session.request.certMedMimeType = '';
+        session.request.certMedFilename = '';
+        await moveToConfirmRequest(from, session);
+        return;
+      }
+
+      await sendTextMessage(
+        from,
+        'Adjunta el certificado como documento de WhatsApp o escribe "omitir" para continuar sin archivo'
       );
       return;
 
@@ -287,27 +464,63 @@ async function processMessage(message) {
       try {
         const payload = buildCreateCasePayload(session.employee, session.request);
         const apiResponse = await createPtoCase(payload);
+        const appUid = extractAppUid(apiResponse);
+        let certificateResult = null;
+        let attachmentError = null;
+
+        console.log('[LURANA_CASE] Caso creado:', {
+          requestId: session.request.request_id,
+          appUid: appUid || null
+        });
+
+        if (session.request.certMedMediaId) {
+          try {
+            certificateResult = await attachCertificateIfNeeded(session, appUid);
+          } catch (error) {
+            attachmentError = describeHttpError(error);
+            console.error('[CERT_MED] Error adjuntando certificado:', attachmentError);
+          }
+        }
 
         saveRequest(session.request.request_id, {
           local_request_id: session.request.request_id,
           phone: from,
+          app_uid: appUid || null,
           employee: session.employee,
           request: session.request,
           lurana_payload: payload,
-          lurana_response: apiResponse
+          lurana_response: apiResponse,
+          cert_med_result: certificateResult,
+          cert_med_error: attachmentError
         });
 
         clearSession(from);
 
-        await sendTextMessage(
-          from,
-          `Solicitud registrada correctamente ✅\n\nDías solicitados: ${session.request.requestedDays}`
-        );
+        let confirmationMessage = [
+          'Solicitud registrada correctamente.',
+          '',
+          `Dias solicitados: ${session.request.requestedDays}`
+        ];
+
+        if (appUid) {
+          confirmationMessage.push(`Caso: ${appUid}`);
+        }
+
+        if (certificateResult && !certificateResult.skipped) {
+          confirmationMessage.push('Certificado medico adjuntado correctamente.');
+        }
+
+        if (attachmentError) {
+          confirmationMessage.push('');
+          confirmationMessage.push(`Aviso: ${buildAttachmentWarning(attachmentError)}`);
+        }
+
+        await sendTextMessage(from, confirmationMessage.join('\n'));
       } catch (error) {
-        console.error('Error creando caso:', error.response?.data || error.message);
+        console.error('[LURANA_CASE] Error creando caso:', describeHttpError(error));
         await sendTextMessage(
           from,
-          'Ocurrió un error al crear el caso. Falta validar token, pro_uid o formato final del payload'
+          'Ocurrio un error al crear el caso. Revisa token, permisos y payload enviado a Lurana.'
         );
       }
       return;
