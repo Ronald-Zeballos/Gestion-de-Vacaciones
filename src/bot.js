@@ -8,14 +8,23 @@ const {
   saveRequest
 } = require('./storage');
 const {
+  getProfile,
+  saveProfile,
+  clearProfile
+} = require('./profiles');
+const {
   sendTextMessage,
-  sendButtonsMessage
+  sendButtonsMessage,
+  sendListMessage
 } = require('./whatsapp');
 const {
+  DATE_FORMAT,
   normalizeText,
   parseDate,
+  parseDateOptionId,
   isWeekend,
   calculateWorkingDays,
+  buildNextWorkingDaysOptions,
   describeHttpError
 } = require('./utils');
 const {
@@ -30,12 +39,25 @@ const STEPS = {
   MENU: 'MENU',
   USERNAME: 'USERNAME',
   CONFIRM_PROFILE: 'CONFIRM_PROFILE',
-  START_DATE: 'START_DATE',
-  END_DATE: 'END_DATE',
+  START_DATE_PICK: 'START_DATE_PICK',
+  END_DATE_PICK: 'END_DATE_PICK',
   REASON: 'REASON',
   CERT_MED: 'CERT_MED',
   CONFIRM_REQUEST: 'CONFIRM_REQUEST'
 };
+
+function createEmptyRequest() {
+  return {
+    request_id: uuidv4(),
+    startDate: '',
+    endDate: '',
+    reason: '',
+    requestedDays: 0,
+    certMedMediaId: '',
+    certMedMimeType: '',
+    certMedFilename: ''
+  };
+}
 
 function buildInitialSession(phone) {
   return {
@@ -43,17 +65,14 @@ function buildInitialSession(phone) {
     step: STEPS.MENU,
     startedAt: new Date().toISOString(),
     employee: null,
-    request: {
-      request_id: uuidv4(),
-      startDate: '',
-      endDate: '',
-      reason: '',
-      requestedDays: 0,
-      certMedMediaId: '',
-      certMedMimeType: '',
-      certMedFilename: ''
-    }
+    request: createEmptyRequest(),
+    lastCreateError: null
   };
+}
+
+function resetRequestState(session) {
+  session.request = createEmptyRequest();
+  session.lastCreateError = null;
 }
 
 function getUserInput(message) {
@@ -69,12 +88,26 @@ function parseApiUser(data) {
   return data;
 }
 
+function hydrateEmployee(rawEmployee, username) {
+  if (!rawEmployee) return null;
+
+  return {
+    ...rawEmployee,
+    userName: normalizeText(username) || normalizeText(rawEmployee.userName),
+    userId: rawEmployee.userId || rawEmployee.id || ''
+  };
+}
+
 function employeeSummary(employee) {
   return [
     `Empleado: ${(employee.firstName || employee.userName || '').trim()} ${(employee.lastName || '').trim()}`.trim(),
     `Correo: ${employee.email || ''}`,
     `Username: ${employee.userName || ''}`
   ].filter(Boolean).join('\n');
+}
+
+function getEmployeeDisplayName(employee) {
+  return normalizeText(employee?.firstName) || normalizeText(employee?.userName) || 'de nuevo';
 }
 
 function buildRequestSummary(session) {
@@ -153,6 +186,61 @@ function buildAttachmentWarning(errorOrDetail) {
   return `La solicitud fue creada, pero no pude adjuntar el certificado (${detail.message}).`;
 }
 
+function buildCreateErrorMessage(errorDetail) {
+  const detail =
+    errorDetail?.status !== undefined || errorDetail?.isTimeout !== undefined
+      ? errorDetail
+      : describeHttpError(errorDetail);
+
+  const lines = [
+    'No pude registrar la solicitud en Lurana.',
+    `Detalle: ${detail.message}`
+  ];
+
+  if (detail.isTimeout) {
+    lines.push('La conexion excedio el tiempo de espera.');
+  }
+
+  lines.push('', 'Puedes reintentar o volver al menu.');
+  return lines.join('\n');
+}
+
+function buildProfilePayload(employee) {
+  return {
+    username: employee.userName || '',
+    firstName: employee.firstName || '',
+    lastName: employee.lastName || '',
+    email: employee.email || ''
+  };
+}
+
+function buildDateSections(options) {
+  const sections = [];
+
+  for (let index = 0; index < options.length; index += 10) {
+    const chunk = options.slice(index, index + 10);
+    sections.push({
+      title: sections.length === 0 ? 'Proximos dias' : `Mas opciones ${index + 1}-${index + chunk.length}`,
+      rows: chunk.map((option) => ({
+        id: option.id,
+        title: option.title,
+        description: option.description || ''
+      }))
+    });
+  }
+
+  return sections;
+}
+
+function parseSelectedDate(input, plainText) {
+  return parseDateOptionId(input) || parseDate(plainText);
+}
+
+async function persistEmployeeProfile(phone, employee) {
+  if (!employee?.userName) return;
+  saveProfile(phone, buildProfilePayload(employee));
+}
+
 async function deleteTempFile(filePath) {
   if (!filePath) return;
 
@@ -166,8 +254,71 @@ async function deleteTempFile(filePath) {
   }
 }
 
+async function sendMainMenu(to, session, introText = '') {
+  const employee = session?.employee || null;
+  const lines = [];
+
+  if (introText) {
+    lines.push(introText);
+  } else if (employee) {
+    lines.push(`Hola ${getEmployeeDisplayName(employee)}.`);
+  } else {
+    lines.push('Hola.');
+  }
+
+  lines.push(`Soy el asistente de *${config.companyName}*.`);
+
+  if (employee) {
+    lines.push(`Perfil activo: ${employee.userName || employee.email || 'sin username'}`);
+  }
+
+  lines.push('', 'Que deseas hacer?');
+
+  const buttons = employee
+    ? [
+        { id: 'menu_start', title: 'Nueva solicitud' },
+        { id: 'change_user', title: 'Cambiar usuario' },
+        { id: 'exit_flow', title: 'Salir' }
+      ]
+    : [
+        { id: 'menu_start', title: 'Nueva solicitud' },
+        { id: 'exit_flow', title: 'Salir' }
+      ];
+
+  await sendButtonsMessage(to, lines.join('\n'), buttons);
+}
+
+async function sendStartDatePicker(to, session) {
+  session.step = STEPS.START_DATE_PICK;
+  session.lastCreateError = null;
+  saveSession(to, session);
+
+  const sections = buildDateSections(buildNextWorkingDaysOptions(14));
+  await sendListMessage(
+    to,
+    'Elige la fecha de inicio.\nSi lo prefieres, tambien puedes escribirla como DD-MM-YYYY.',
+    'Ver fechas',
+    sections
+  );
+}
+
+async function sendEndDatePicker(to, session) {
+  session.step = STEPS.END_DATE_PICK;
+  session.lastCreateError = null;
+  saveSession(to, session);
+
+  const sections = buildDateSections(buildNextWorkingDaysOptions(14, session.request.startDate));
+  await sendListMessage(
+    to,
+    `Elige la fecha de fin.\nFecha de inicio seleccionada: ${session.request.startDate}`,
+    'Ver fechas',
+    sections
+  );
+}
+
 async function moveToConfirmRequest(phone, session) {
   session.step = STEPS.CONFIRM_REQUEST;
+  session.lastCreateError = null;
   saveSession(phone, session);
 
   await sendButtonsMessage(
@@ -180,29 +331,88 @@ async function moveToConfirmRequest(phone, session) {
   );
 }
 
-function buildPromptForCurrentStep(step) {
-  switch (step) {
+async function sendCreateRetryOptions(phone, detail) {
+  await sendButtonsMessage(
+    phone,
+    buildCreateErrorMessage(detail),
+    [
+      { id: 'retry_create', title: 'Reintentar' },
+      { id: 'menu_start', title: 'Menu' },
+      { id: 'cancel_flow', title: 'Cancelar' }
+    ]
+  );
+}
+
+async function sendPostSuccessOptions(phone, message) {
+  await sendButtonsMessage(
+    phone,
+    `${message}\n\nQue deseas hacer ahora?`,
+    [
+      { id: 'menu_start', title: 'Nueva solicitud' },
+      { id: 'exit_flow', title: 'Salir' }
+    ]
+  );
+}
+
+async function resumeCurrentStep(phone, session) {
+  switch (session.step) {
     case STEPS.USERNAME:
-      return 'Ahora escribe tu username corporativo.';
+      await sendTextMessage(phone, 'Escribe tu username corporativo');
+      return;
+
     case STEPS.CONFIRM_PROFILE:
-      return 'Ahora confirma si los datos del usuario son correctos.';
-    case STEPS.START_DATE:
-      return 'Ahora escribe la fecha de inicio en formato DD-MM-YYYY.';
-    case STEPS.END_DATE:
-      return 'Ahora escribe la fecha de fin en formato DD-MM-YYYY.';
+      await sendButtonsMessage(
+        phone,
+        `Encontre estos datos:\n\n${employeeSummary(session.employee)}\n\nSon correctos?`,
+        [
+          { id: 'profile_ok', title: 'Si' },
+          { id: 'profile_retry', title: 'No' }
+        ]
+      );
+      return;
+
+    case STEPS.START_DATE_PICK:
+      await sendStartDatePicker(phone, session);
+      return;
+
+    case STEPS.END_DATE_PICK:
+      await sendEndDatePicker(phone, session);
+      return;
+
     case STEPS.REASON:
-      return 'Ahora escribe el motivo de la solicitud.';
+      await sendTextMessage(phone, 'Escribe el motivo de tus vacaciones');
+      return;
+
+    case STEPS.CERT_MED:
+      await sendButtonsMessage(
+        phone,
+        buildCertificatePrompt(),
+        [
+          { id: 'cert_skip', title: 'Omitir' },
+          { id: 'cancel_flow', title: 'Cancelar' }
+        ]
+      );
+      return;
+
     case STEPS.CONFIRM_REQUEST:
-      return 'Cuando quieras registrarla, pulsa Confirmar.';
+      if (session.lastCreateError) {
+        await sendCreateRetryOptions(phone, session.lastCreateError);
+        return;
+      }
+
+      await moveToConfirmRequest(phone, session);
+      return;
+
+    case STEPS.MENU:
     default:
-      return 'Continua con el flujo.';
+      await sendMainMenu(phone, session);
   }
 }
 
 async function captureCertificateInSession(phone, session, message) {
   if (!message.mediaId) {
     await sendTextMessage(phone, 'Recibi el documento, pero no encontre el mediaId. Intenta reenviarlo');
-    return true;
+    return;
   }
 
   session.request.certMedMediaId = message.mediaId;
@@ -219,13 +429,12 @@ async function captureCertificateInSession(phone, session, message) {
 
   await sendTextMessage(phone, 'Certificado recibido');
 
-  if (session.step === STEPS.CERT_MED || session.step === STEPS.CONFIRM_REQUEST) {
+  if (session.step === STEPS.CERT_MED) {
     await moveToConfirmRequest(phone, session);
-    return true;
+    return;
   }
 
-  await sendTextMessage(phone, buildPromptForCurrentStep(session.step));
-  return true;
+  await resumeCurrentStep(phone, session);
 }
 
 async function attachCertificateIfNeeded(session, appUid) {
@@ -263,6 +472,7 @@ async function attachCertificateIfNeeded(session, appUid) {
       mediaId,
       session.request.certMedFilename || `certificado-${session.request.request_id}`
     );
+
     download = {
       filePath: downloadedMedia.filePath,
       filename: downloadedMedia.meta.filename,
@@ -297,15 +507,59 @@ async function attachCertificateIfNeeded(session, appUid) {
   }
 }
 
-async function sendMainMenu(to) {
-  await sendButtonsMessage(
-    to,
-    `Hola.\nSoy el asistente de *${config.companyName}*.\n\nQue deseas hacer?`,
-    [
-      { id: 'menu_start', title: 'Nueva solicitud' },
-      { id: 'menu_cancel', title: 'Cancelar' }
-    ]
-  );
+async function resetConversationToMenu(phone, employee = null, introText = '') {
+  if (employee?.userName) {
+    await persistEmployeeProfile(phone, employee);
+  }
+
+  clearSession(phone);
+
+  const session = buildInitialSession(phone);
+  if (employee) {
+    session.employee = employee;
+  }
+
+  saveSession(phone, session);
+
+  if (introText) {
+    await sendTextMessage(phone, introText);
+  }
+
+  await sendMainMenu(phone, session);
+}
+
+async function exitConversation(phone, session) {
+  if (session?.employee?.userName) {
+    await persistEmployeeProfile(phone, session.employee);
+  }
+
+  clearSession(phone);
+  await sendTextMessage(phone, 'Hasta luego. Guarde tu perfil para la proxima.');
+}
+
+async function restoreSessionFromProfile(phone) {
+  const profile = getProfile(phone);
+
+  if (!profile?.username) {
+    return null;
+  }
+
+  const apiResponse = await getUserData(profile.username);
+  const employee = hydrateEmployee(parseApiUser(apiResponse), profile.username);
+
+  if (!employee) {
+    throw new Error('No se pudo reconstruir el perfil guardado');
+  }
+
+  const session = buildInitialSession(phone);
+  session.employee = employee;
+  saveSession(phone, session);
+  await persistEmployeeProfile(phone, employee);
+
+  return {
+    profile,
+    session
+  };
 }
 
 async function processMessage(message) {
@@ -316,18 +570,51 @@ async function processMessage(message) {
 
   if (!from) return;
 
+  let session = getSession(from);
+
+  if (session?.lastCreateError && (
+    input === 'menu_start' ||
+    input === 'cancel_flow' ||
+    inputLower === 'cancelar'
+  )) {
+    await resetConversationToMenu(from, session.employee, 'Volvimos al menu principal.');
+    return;
+  }
+
+  if (input === 'exit_flow' || inputLower === 'salir') {
+    await exitConversation(from, session);
+    return;
+  }
+
   if (inputLower === 'cancelar' || input === 'menu_cancel' || input === 'cancel_flow') {
+    if (session?.employee?.userName) {
+      await persistEmployeeProfile(from, session.employee);
+    }
+
     clearSession(from);
     await sendTextMessage(from, 'Solicitud cancelada correctamente');
     return;
   }
 
-  let session = getSession(from);
-
   if (!session) {
+    try {
+      const restored = await restoreSessionFromProfile(from);
+
+      if (restored?.session) {
+        await sendMainMenu(
+          from,
+          restored.session,
+          `Hola ${getEmployeeDisplayName(restored.session.employee)}. Te reconoci por tu perfil guardado.`
+        );
+        return;
+      }
+    } catch (error) {
+      console.error('[PROFILE] Error restaurando perfil:', describeHttpError(error));
+    }
+
     session = buildInitialSession(from);
     saveSession(from, session);
-    await sendMainMenu(from);
+    await sendMainMenu(from, session);
     return;
   }
 
@@ -338,8 +625,25 @@ async function processMessage(message) {
 
   switch (session.step) {
     case STEPS.MENU:
+      if (input === 'change_user' || inputLower === 'cambiar usuario') {
+        clearProfile(from);
+        session.employee = null;
+        resetRequestState(session);
+        session.step = STEPS.USERNAME;
+        saveSession(from, session);
+        await sendTextMessage(from, 'Perfil olvidado. Escribe tu username corporativo');
+        return;
+      }
+
       if (input !== 'menu_start' && inputLower !== 'nueva solicitud' && inputLower !== 'iniciar') {
-        await sendMainMenu(from);
+        await sendMainMenu(from, session);
+        return;
+      }
+
+      resetRequestState(session);
+
+      if (session.employee) {
+        await sendStartDatePicker(from, session);
         return;
       }
 
@@ -356,7 +660,7 @@ async function processMessage(message) {
 
       try {
         const apiResponse = await getUserData(plainText);
-        const employee = parseApiUser(apiResponse);
+        const employee = hydrateEmployee(parseApiUser(apiResponse), plainText);
 
         if (!employee) {
           await sendTextMessage(from, 'No encontre un usuario con ese username. Intenta nuevamente');
@@ -365,6 +669,7 @@ async function processMessage(message) {
 
         session.employee = employee;
         session.step = STEPS.CONFIRM_PROFILE;
+        session.lastCreateError = null;
         saveSession(from, session);
 
         await sendButtonsMessage(
@@ -383,7 +688,9 @@ async function processMessage(message) {
 
     case STEPS.CONFIRM_PROFILE:
       if (input === 'profile_retry') {
+        clearProfile(from);
         session.employee = null;
+        resetRequestState(session);
         session.step = STEPS.USERNAME;
         saveSession(from, session);
         await sendTextMessage(from, 'Perfecto. Escribe nuevamente tu username');
@@ -395,58 +702,60 @@ async function processMessage(message) {
         return;
       }
 
-      session.step = STEPS.START_DATE;
-      saveSession(from, session);
-      await sendTextMessage(from, 'Escribe la fecha de inicio en formato DD-MM-YYYY');
+      await persistEmployeeProfile(from, session.employee);
+      resetRequestState(session);
+      await sendStartDatePicker(from, session);
       return;
 
-    case STEPS.START_DATE: {
-      const start = parseDate(plainText);
+    case STEPS.START_DATE_PICK: {
+      const start = parseSelectedDate(input, plainText);
 
       if (!start) {
-        await sendTextMessage(from, 'Fecha invalida. Usa DD-MM-YYYY');
+        await sendTextMessage(from, 'Selecciona una fecha de la lista o escribe DD-MM-YYYY');
+        await sendStartDatePicker(from, session);
         return;
       }
 
       if (isWeekend(start)) {
         await sendTextMessage(from, 'No se permiten fechas en fin de semana');
+        await sendStartDatePicker(from, session);
         return;
       }
 
-      session.request.startDate = start.format('DD-MM-YYYY');
-      session.step = STEPS.END_DATE;
-      saveSession(from, session);
-
-      await sendTextMessage(from, 'Escribe la fecha de fin en formato DD-MM-YYYY');
+      session.request.startDate = start.format(DATE_FORMAT);
+      session.request.endDate = '';
+      session.request.requestedDays = 0;
+      await sendEndDatePicker(from, session);
       return;
     }
 
-    case STEPS.END_DATE: {
-      const end = parseDate(plainText);
+    case STEPS.END_DATE_PICK: {
+      const end = parseSelectedDate(input, plainText);
       const start = parseDate(session.request.startDate);
 
       if (!end || !start) {
-        await sendTextMessage(from, 'Fecha invalida. Usa DD-MM-YYYY');
+        await sendTextMessage(from, 'Selecciona una fecha de la lista o escribe DD-MM-YYYY');
+        await sendEndDatePicker(from, session);
         return;
       }
 
       if (isWeekend(end)) {
         await sendTextMessage(from, 'No se permiten fechas en fin de semana');
+        await sendEndDatePicker(from, session);
         return;
       }
 
       if (end.isBefore(start, 'day')) {
         await sendTextMessage(from, 'La fecha fin no puede ser menor a la fecha inicio');
+        await sendEndDatePicker(from, session);
         return;
       }
 
-      const requestedDays = calculateWorkingDays(
+      session.request.endDate = end.format(DATE_FORMAT);
+      session.request.requestedDays = calculateWorkingDays(
         session.request.startDate,
-        end.format('DD-MM-YYYY')
+        session.request.endDate
       );
-
-      session.request.endDate = end.format('DD-MM-YYYY');
-      session.request.requestedDays = requestedDays;
       session.step = STEPS.REASON;
       saveSession(from, session);
 
@@ -462,6 +771,7 @@ async function processMessage(message) {
 
       session.request.reason = plainText;
       session.step = STEPS.CERT_MED;
+      session.lastCreateError = null;
       saveSession(from, session);
 
       await sendButtonsMessage(
@@ -490,78 +800,90 @@ async function processMessage(message) {
       return;
 
     case STEPS.CONFIRM_REQUEST:
-      if (input !== 'request_confirm') {
-        await sendTextMessage(from, 'Selecciona Confirmar o Cancelar');
+      if (input !== 'request_confirm' && input !== 'retry_create') {
+        if (session.lastCreateError) {
+          await sendCreateRetryOptions(from, session.lastCreateError);
+        } else {
+          await sendTextMessage(from, 'Selecciona Confirmar o Cancelar');
+        }
         return;
       }
 
       try {
-        const payload = buildCreateCasePayload(session.employee, session.request);
+        const requestSnapshot = { ...session.request };
+        const payload = buildCreateCasePayload(session.employee, requestSnapshot);
         const apiResponse = await createPtoCase(payload);
         const appUid = extractAppUid(apiResponse);
         let certificateResult = null;
         let attachmentError = null;
 
         console.log('[LURANA_CASE] Caso creado:', {
-          requestId: session.request.request_id,
+          requestId: requestSnapshot.request_id,
           appUid: appUid || null
         });
 
-        if (session.request.certMedMediaId) {
+        if (requestSnapshot.certMedMediaId) {
           try {
-            certificateResult = await attachCertificateIfNeeded(session, appUid);
+            certificateResult = await attachCertificateIfNeeded(
+              { ...session, request: requestSnapshot },
+              appUid
+            );
           } catch (error) {
             attachmentError = describeHttpError(error);
             console.error('[CERT_MED] Error adjuntando certificado:', attachmentError);
           }
         }
 
-        saveRequest(session.request.request_id, {
-          local_request_id: session.request.request_id,
+        saveRequest(requestSnapshot.request_id, {
+          local_request_id: requestSnapshot.request_id,
           phone: from,
           app_uid: appUid || null,
           employee: session.employee,
-          request: session.request,
+          request: requestSnapshot,
           lurana_payload: payload,
           lurana_response: apiResponse,
           cert_med_result: certificateResult,
           cert_med_error: attachmentError
         });
 
-        clearSession(from);
+        await persistEmployeeProfile(from, session.employee);
 
-        let confirmationMessage = [
+        const confirmationLines = [
           'Solicitud registrada correctamente.',
           '',
-          `Dias solicitados: ${session.request.requestedDays}`
+          `Dias solicitados: ${requestSnapshot.requestedDays}`
         ];
 
         if (appUid) {
-          confirmationMessage.push(`Caso: ${appUid}`);
+          confirmationLines.push(`Caso: ${appUid}`);
         }
 
         if (certificateResult && !certificateResult.skipped) {
-          confirmationMessage.push('Certificado medico adjuntado correctamente.');
+          confirmationLines.push('Certificado medico adjuntado correctamente.');
         }
 
         if (attachmentError) {
-          confirmationMessage.push('');
-          confirmationMessage.push(`Aviso: ${buildAttachmentWarning(attachmentError)}`);
+          confirmationLines.push('');
+          confirmationLines.push(`Aviso: ${buildAttachmentWarning(attachmentError)}`);
         }
 
-        await sendTextMessage(from, confirmationMessage.join('\n'));
+        resetRequestState(session);
+        session.step = STEPS.MENU;
+        saveSession(from, session);
+
+        await sendPostSuccessOptions(from, confirmationLines.join('\n'));
       } catch (error) {
-        console.error('[LURANA_CASE] Error creando caso:', describeHttpError(error));
-        await sendTextMessage(
-          from,
-          'Ocurrio un error al crear el caso. Revisa token, permisos y payload enviado a Lurana.'
-        );
+        const detail = describeHttpError(error);
+        session.lastCreateError = detail;
+        saveSession(from, session);
+
+        console.error('[LURANA_CASE] Error creando caso:', detail);
+        await sendCreateRetryOptions(from, detail);
       }
       return;
 
     default:
-      clearSession(from);
-      await sendMainMenu(from);
+      await resetConversationToMenu(from, session.employee);
   }
 }
 

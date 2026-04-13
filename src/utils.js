@@ -5,6 +5,16 @@ dayjs.extend(customParseFormat);
 
 const DATE_FORMAT = 'DD-MM-YYYY';
 const DATETIME_FORMAT = 'DD-MM-YYYY HH:mm';
+const WEEKDAY_SHORT = ['Dom', 'Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab'];
+const WEEKDAY_LONG = [
+  'Domingo',
+  'Lunes',
+  'Martes',
+  'Miercoles',
+  'Jueves',
+  'Viernes',
+  'Sabado'
+];
 
 function normalizeText(value) {
   return String(value || '').trim();
@@ -48,6 +58,47 @@ function calculateWorkingDays(startDateStr, endDateStr) {
   }
 
   return count;
+}
+
+function parseDateOptionId(value) {
+  const normalizedValue = normalizeText(value);
+  const match = /^date_(\d{4}-\d{2}-\d{2})$/i.exec(normalizedValue);
+
+  if (!match) {
+    return null;
+  }
+
+  return parseDate(match[1]);
+}
+
+function formatWorkingDayTitle(dateObj) {
+  return `${WEEKDAY_SHORT[dateObj.day()]} ${dateObj.format('DD/MM')}`;
+}
+
+function formatWorkingDayDescription(dateObj) {
+  return `${WEEKDAY_LONG[dateObj.day()]} ${dateObj.format('DD-MM-YYYY')}`;
+}
+
+function buildNextWorkingDaysOptions(days = 14, startFrom = null) {
+  const baseDate = startFrom ? parseDate(startFrom) : dayjs();
+  let current = (baseDate || dayjs()).startOf('day');
+  const options = [];
+
+  while (options.length < days) {
+    if (!isWeekend(current)) {
+      options.push({
+        id: `date_${current.format('YYYY-MM-DD')}`,
+        title: formatWorkingDayTitle(current),
+        description: formatWorkingDayDescription(current),
+        date: current.format(DATE_FORMAT),
+        isoDate: current.format('YYYY-MM-DD')
+      });
+    }
+
+    current = current.add(1, 'day');
+  }
+
+  return options;
 }
 
 function describeHttpError(error) {
@@ -94,8 +145,10 @@ module.exports = {
   todayDate,
   parseDate,
   parseDateTime,
+  parseDateOptionId,
   isWeekend,
   calculateWorkingDays,
+  buildNextWorkingDaysOptions,
   describeHttpError,
   getHttpStatusFromError
 };
