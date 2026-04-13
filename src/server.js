@@ -1,5 +1,6 @@
 const fs = require('fs/promises');
 const path = require('path');
+const axios = require('axios');
 const express = require('express');
 const config = require('./config');
 const { ensureDirectories } = require('./storage');
@@ -18,6 +19,8 @@ const {
   getLastCreateCase,
   getLastCasesQuery,
   getLastMedia,
+  getLastIncoming,
+  setLastIncoming,
   clear
 } = require('./debugStore');
 
@@ -59,6 +62,8 @@ function normalizeIncomingMessage(message) {
     interactiveId: '',
     interactiveTitle: '',
     mediaId: '',
+    mediaMime: '',
+    mediaFilename: '',
     mimeType: '',
     mime_type: '',
     filename: '',
@@ -93,12 +98,44 @@ function normalizeIncomingMessage(message) {
   if (type === 'document') {
     payload.text = message.document?.caption || '';
     payload.mediaId = message.document?.id || '';
+    payload.mediaMime = message.document?.mime_type || '';
+    payload.mediaFilename = message.document?.filename || '';
     payload.mimeType = message.document?.mime_type || '';
     payload.mime_type = message.document?.mime_type || '';
     payload.filename = message.document?.filename || '';
   }
 
+  if (type === 'image') {
+    payload.text = message.image?.caption || '';
+    payload.mediaId = message.image?.id || '';
+    payload.mediaMime = message.image?.mime_type || '';
+    payload.mimeType = message.image?.mime_type || '';
+    payload.mime_type = message.image?.mime_type || '';
+  }
+
   return payload;
+}
+
+async function fetchWhatsAppMediaMetadata(mediaId) {
+  if (!mediaId) {
+    throw new Error('mediaId is required');
+  }
+
+  if (!config.whatsappToken) {
+    throw new Error('WHATSAPP_TOKEN is not configured');
+  }
+
+  const response = await axios.get(
+    `https://graph.facebook.com/v23.0/${encodeURIComponent(mediaId)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${config.whatsappToken}`
+      },
+      timeout: 15000
+    }
+  );
+
+  return response.data;
 }
 
 app.get('/', (req, res) => {
@@ -331,6 +368,32 @@ app.get('/debug/last-media', requireDebugMode, (req, res) => {
   });
 });
 
+app.get('/debug/last-incoming', requireDebugMode, (req, res) => {
+  res.json({
+    ok: true,
+    data: getLastIncoming() || buildEmptyPayload('lastIncoming')
+  });
+});
+
+app.get('/debug/wa-media-url/:mediaId', requireDebugMode, async (req, res) => {
+  try {
+    const data = await fetchWhatsAppMediaMetadata(req.params.mediaId);
+
+    res.json({
+      ok: true,
+      data: {
+        id: data?.id || req.params.mediaId,
+        url: data?.url || '',
+        mime_type: data?.mime_type || '',
+        file_size: data?.file_size || null
+      }
+    });
+  } catch (error) {
+    console.error('[DEBUG][WA_MEDIA_URL] Error:', describeHttpError(error));
+    res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
+  }
+});
+
 app.get('/debug/clear', requireDebugMode, (req, res) => {
   clear();
   res.json({
@@ -473,6 +536,17 @@ app.post('/webhook', async (req, res) => {
 
         for (const message of messages) {
           const normalized = normalizeIncomingMessage(message);
+          setLastIncoming({
+            from: normalized.from,
+            type: normalized.type,
+            messageId: normalized.messageId,
+            text: normalized.text,
+            interactiveId: normalized.interactiveId,
+            mediaId: normalized.mediaId,
+            mediaMime: normalized.mediaMime,
+            mediaFilename: normalized.mediaFilename,
+            raw: normalized.raw
+          });
           await processMessage(normalized);
         }
       }

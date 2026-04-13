@@ -2,7 +2,8 @@ const store = {
   lastUserLookup: null,
   lastCreateCase: null,
   lastCasesQuery: null,
-  lastMedia: null
+  lastMedia: null,
+  lastIncoming: null
 };
 
 function buildEntry(data) {
@@ -48,11 +49,21 @@ function getLastMedia() {
   return store.lastMedia;
 }
 
+function setLastIncoming(data) {
+  store.lastIncoming = buildEntry(data);
+  return store.lastIncoming;
+}
+
+function getLastIncoming() {
+  return store.lastIncoming;
+}
+
 function clear() {
   store.lastUserLookup = null;
   store.lastCreateCase = null;
   store.lastCasesQuery = null;
   store.lastMedia = null;
+  store.lastIncoming = null;
 }
 
 module.exports = {
@@ -64,8 +75,12 @@ module.exports = {
   getLastCasesQuery,
   setLastMedia,
   getLastMedia,
+  setLastIncoming,
+  getLastIncoming,
   clear,
   setLastWhatsAppMedia: setLastMedia,
   getLastWhatsAppMedia: getLastMedia,
+  setLastIncomingMessage: setLastIncoming,
+  getLastIncomingMessage: getLastIncoming,
   clearDebugStore: clear
 };
