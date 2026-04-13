@@ -6,7 +6,8 @@ const config = require('./config');
 const { getAccessToken } = require('./luranaAuth');
 const {
   setLastUserLookup,
-  setLastCreateCase
+  setLastCreateCase,
+  setLastCasesQuery
 } = require('./debugStore');
 
 function apiBase() {
@@ -101,7 +102,8 @@ async function createPtoCase(payload) {
   setLastCreateCase({
     payload,
     response: null,
-    error: null
+    error: null,
+    extractedAppUid: null
   });
 
   try {
@@ -111,16 +113,74 @@ async function createPtoCase(payload) {
       maxRedirects: 0
     });
 
+    const extractedAppUid =
+      response.data?.app_uid ||
+      response.data?.data?.app_uid ||
+      response.data?.appUid ||
+      response.data?.data?.appUid ||
+      response.data?.caseUid ||
+      response.data?.data?.caseUid ||
+      extractAppUid(response.data) ||
+      null;
+
     setLastCreateCase({
       payload,
       response: response.data,
-      error: null
+      error: null,
+      extractedAppUid
     });
 
     return response.data;
   } catch (error) {
     setLastCreateCase({
       payload,
+      response: null,
+      error: getDebugErrorValue(error),
+      extractedAppUid: null
+    });
+
+    throw error;
+  }
+}
+
+async function listRecentCases(proUid, limit = 10) {
+  const normalizedLimit = Number(limit) > 0 ? Number(limit) : 10;
+  const query = {
+    proUid: proUid || '',
+    limit: normalizedLimit
+  };
+
+  const params = {
+    start: 0,
+    limit: normalizedLimit,
+    sort: 'APP_CREATE_DATE',
+    dir: 'DESC'
+  };
+
+  if (proUid) {
+    params.pro_uid = proUid;
+  }
+
+  const url = `${apiBase()}/cases`;
+
+  try {
+    const response = await axios.get(url, {
+      headers: await authHeaders({ 'Content-Type': 'application/json' }),
+      params,
+      timeout: 20000,
+      maxRedirects: 0
+    });
+
+    setLastCasesQuery({
+      query,
+      response: response.data,
+      error: null
+    });
+
+    return response.data;
+  } catch (error) {
+    setLastCasesQuery({
+      query,
       response: null,
       error: getDebugErrorValue(error)
     });
@@ -173,6 +233,7 @@ async function uploadInputDocument(appUid, inpDocUid, tasUid, filePath, comment 
 module.exports = {
   getUserData,
   createPtoCase,
+  listRecentCases,
   uploadInputDocument,
   extractAppUid
 };

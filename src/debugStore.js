@@ -1,6 +1,7 @@
 const store = {
   lastUserLookup: null,
   lastCreateCase: null,
+  lastCasesQuery: null,
   lastMedia: null
 };
 
@@ -29,6 +30,15 @@ function getLastCreateCase() {
   return store.lastCreateCase;
 }
 
+function setLastCasesQuery(data) {
+  store.lastCasesQuery = buildEntry(data);
+  return store.lastCasesQuery;
+}
+
+function getLastCasesQuery() {
+  return store.lastCasesQuery;
+}
+
 function setLastMedia(data) {
   store.lastMedia = buildEntry(data);
   return store.lastMedia;
@@ -41,6 +51,7 @@ function getLastMedia() {
 function clear() {
   store.lastUserLookup = null;
   store.lastCreateCase = null;
+  store.lastCasesQuery = null;
   store.lastMedia = null;
 }
 
@@ -49,6 +60,8 @@ module.exports = {
   getLastUserLookup,
   setLastCreateCase,
   getLastCreateCase,
+  setLastCasesQuery,
+  getLastCasesQuery,
   setLastMedia,
   getLastMedia,
   clear,

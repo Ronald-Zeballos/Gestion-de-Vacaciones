@@ -7,6 +7,7 @@ const { processMessage } = require('./bot');
 const {
   getUserData,
   createPtoCase,
+  listRecentCases,
   uploadInputDocument,
   extractAppUid
 } = require('./luranaApi');
@@ -15,6 +16,7 @@ const { describeHttpError, getHttpStatusFromError } = require('./utils');
 const {
   getLastUserLookup,
   getLastCreateCase,
+  getLastCasesQuery,
   getLastMedia,
   clear
 } = require('./debugStore');
@@ -146,6 +148,111 @@ function listRegisteredRoutes() {
   return routes;
 }
 
+function maskValue(value, visible = 4) {
+  const normalized = String(value || '');
+
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized.length <= visible) {
+    return '*'.repeat(normalized.length);
+  }
+
+  return `***${normalized.slice(-visible)}`;
+}
+
+function buildDebugEnvPayload() {
+  return {
+    DEBUG_MODE: process.env.DEBUG_MODE || '',
+    NODE_ENV: process.env.NODE_ENV || '',
+    PORT: process.env.PORT || '',
+    LURANA_API_BASE_URL: config.luranaApiBaseUrl,
+    LURANA_WORKSPACE: config.luranaWorkspace,
+    LURANA_PRO_UID: config.luranaProUid,
+    LURANA_TAS_UID: config.luranaTasUid,
+    LURANA_CERT_INP_DOC_UID: config.luranaCertInpDocUid,
+    LURANA_TOKEN_URL: config.luranaTokenUrl,
+    WHATSAPP_PHONE_NUMBER_ID: config.phoneNumberId,
+    LURANA_CLIENT_ID: maskValue(config.luranaClientId),
+    LURANA_CLIENT_SECRET: maskValue(config.luranaClientSecret),
+    LURANA_USER: config.luranaUser,
+    LURANA_PASSWORD: maskValue(config.luranaPassword),
+    WHATSAPP_TOKEN: maskValue(config.whatsappToken)
+  };
+}
+
+function buildEmptyPayload(label) {
+  return {
+    message: `${label} empty`
+  };
+}
+
+function extractCasesArray(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.data?.data)) {
+    return payload.data.data;
+  }
+
+  if (Array.isArray(payload?.data)) {
+    return payload.data;
+  }
+
+  if (Array.isArray(payload?.cases)) {
+    return payload.cases;
+  }
+
+  if (Array.isArray(payload?.response?.data)) {
+    return payload.response.data;
+  }
+
+  if (Array.isArray(payload?.response?.data?.data)) {
+    return payload.response.data.data;
+  }
+
+  return [];
+}
+
+function getCaseProUid(item) {
+  return (
+    item?.pro_uid ||
+    item?.PRO_UID ||
+    item?.process?.pro_uid ||
+    item?.process?.PRO_UID ||
+    item?.processUid ||
+    item?.process_uid ||
+    ''
+  );
+}
+
+function mapCaseSummary(item) {
+  return {
+    app_uid: item?.app_uid || item?.APP_UID || item?.appUid || null,
+    app_number: item?.app_number || item?.APP_NUMBER || item?.case_number || item?.caseNumber || null,
+    pro_uid: getCaseProUid(item) || null,
+    current_task:
+      item?.current_task ||
+      item?.tas_title ||
+      item?.TAS_TITLE ||
+      item?.task_title ||
+      item?.del_current_tas_title ||
+      null,
+    assigned_user:
+      item?.assigned_user ||
+      item?.usr_username ||
+      item?.USR_USERNAME ||
+      item?.del_thread_status ||
+      item?.delegation_user ||
+      null,
+    app_status: item?.app_status || item?.APP_STATUS || null,
+    app_create_date: item?.app_create_date || item?.APP_CREATE_DATE || null,
+    raw: item
+  };
+}
+
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -171,24 +278,56 @@ app.get('/test-lurana-user/:username', async (req, res) => {
   }
 });
 
+app.get('/debug/routes', requireDebugMode, (req, res) => {
+  const routes = listRegisteredRoutes();
+  res.json({
+    ok: true,
+    count: routes.length,
+    routes
+  });
+});
+
+app.get('/routes', requireDebugMode, (req, res) => {
+  const routes = listRegisteredRoutes();
+  res.json({
+    ok: true,
+    count: routes.length,
+    routes
+  });
+});
+
+app.get('/debug/env', requireDebugMode, (req, res) => {
+  res.json({
+    ok: true,
+    env: buildDebugEnvPayload()
+  });
+});
+
 app.get('/debug/last-userlookup', requireDebugMode, (req, res) => {
   res.json({
     ok: true,
-    data: getLastUserLookup()
+    data: getLastUserLookup() || buildEmptyPayload('lastUserLookup')
   });
 });
 
 app.get('/debug/last-createcase', requireDebugMode, (req, res) => {
   res.json({
     ok: true,
-    data: getLastCreateCase()
+    data: getLastCreateCase() || buildEmptyPayload('lastCreateCase')
+  });
+});
+
+app.get('/debug/last-casesquery', requireDebugMode, (req, res) => {
+  res.json({
+    ok: true,
+    data: getLastCasesQuery() || buildEmptyPayload('lastCasesQuery')
   });
 });
 
 app.get('/debug/last-media', requireDebugMode, (req, res) => {
   res.json({
     ok: true,
-    data: getLastMedia()
+    data: getLastMedia() || buildEmptyPayload('lastMedia')
   });
 });
 
@@ -200,13 +339,26 @@ app.get('/debug/clear', requireDebugMode, (req, res) => {
   });
 });
 
-app.get('/routes', requireDebugMode, (req, res) => {
-  const routes = listRegisteredRoutes();
-  res.json({
-    ok: true,
-    count: routes.length,
-    routes
-  });
+app.get('/debug/cases/recent', requireDebugMode, async (req, res) => {
+  try {
+    const rawResponse = await listRecentCases(config.luranaProUid, 20);
+    const allCases = extractCasesArray(rawResponse);
+    const filteredCases = config.luranaProUid
+      ? allCases.filter((item) => getCaseProUid(item) === config.luranaProUid)
+      : allCases;
+
+    res.json({
+      ok: true,
+      proUid: config.luranaProUid || null,
+      totalReceived: allCases.length,
+      totalFiltered: filteredCases.length,
+      cases: filteredCases.map(mapCaseSummary),
+      raw: rawResponse
+    });
+  } catch (error) {
+    console.error('[DEBUG][CASES_RECENT] Error:', describeHttpError(error));
+    res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
+  }
 });
 
 app.post('/test-lurana-case', async (req, res) => {
