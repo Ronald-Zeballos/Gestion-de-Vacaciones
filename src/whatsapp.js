@@ -9,12 +9,21 @@ async function sendRequest(payload) {
 
   const url = `https://graph.facebook.com/v23.0/${config.phoneNumberId}/messages`;
 
-  await axios.post(url, payload, {
-    headers: {
-      Authorization: `Bearer ${config.whatsappToken}`,
-      'Content-Type': 'application/json'
-    }
-  });
+  try {
+    await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${config.whatsappToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (error) {
+    console.error('[WHATSAPP] Error enviando mensaje:', {
+      status: error.response?.status || null,
+      data: error.response?.data || null,
+      message: error.message
+    });
+    throw error;
+  }
 }
 
 async function sendTextMessage(to, body) {

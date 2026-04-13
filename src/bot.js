@@ -46,6 +46,8 @@ const STEPS = {
   CONFIRM_REQUEST: 'CONFIRM_REQUEST'
 };
 
+const DATE_PICKER_BODY = 'Selecciona una fecha de la lista o escribe DD-MM-YYYY';
+
 function createEmptyRequest() {
   return {
     request_id: uuidv4(),
@@ -216,17 +218,12 @@ function buildProfilePayload(employee) {
 }
 
 function buildDateSections(rows) {
-  const sections = [];
-
-  for (let index = 0; index < rows.length; index += 10) {
-    const chunk = rows.slice(index, index + 10);
-    sections.push({
-      title: sections.length === 0 ? 'Proximos dias' : `Mas opciones ${index + 1}-${index + chunk.length}`,
-      rows: chunk
-    });
-  }
-
-  return sections;
+  return [
+    {
+      title: 'Fechas',
+      rows: rows.slice(0, 10)
+    }
+  ];
 }
 
 function parseSelectedDate(input, plainText) {
@@ -288,13 +285,13 @@ async function sendMainMenu(to, session, introText = '') {
 async function sendStartDatePicker(
   to,
   session,
-  body = 'Selecciona una fecha de la lista o escribe DD-MM-YYYY'
+  body = DATE_PICKER_BODY
 ) {
   session.step = STEPS.START_DATE_PICK;
   session.lastCreateError = null;
   saveSession(to, session);
 
-  const sections = buildDateSections(buildNextWorkingDaysRows(14));
+  const sections = buildDateSections(buildNextWorkingDaysRows(10));
   await sendListMessage(
     to,
     body,
@@ -306,16 +303,16 @@ async function sendStartDatePicker(
 async function sendEndDatePicker(
   to,
   session,
-  body = 'Selecciona una fecha de la lista o escribe DD-MM-YYYY'
+  body = DATE_PICKER_BODY
 ) {
   session.step = STEPS.END_DATE_PICK;
   session.lastCreateError = null;
   saveSession(to, session);
 
-  const sections = buildDateSections(buildNextWorkingDaysRows(14, session.request.startDate));
+  const sections = buildDateSections(buildNextWorkingDaysRows(10, session.request.startDate));
   await sendListMessage(
     to,
-    `${body}\nFecha de inicio seleccionada: ${session.request.startDate}`,
+    body,
     'Elegir fecha',
     sections
   );
@@ -525,12 +522,7 @@ async function resetConversationToMenu(phone, employee = null, introText = '', l
   }
 
   saveSession(phone, session);
-
-  if (introText) {
-    await sendTextMessage(phone, introText);
-  }
-
-  await sendMainMenu(phone, session);
+  await sendMainMenu(phone, session, introText);
 }
 
 async function exitConversation(phone, session) {
@@ -587,316 +579,334 @@ async function processMessage(message) {
     session.lastProcessedMessageId = messageId;
     saveSession(from, session);
   }
-
-  if (session?.lastCreateError && (
-    input === 'menu_start' ||
-    input === 'cancel_flow' ||
-    inputLower === 'cancelar'
-  )) {
-    await resetConversationToMenu(from, session.employee, 'Volvimos al menu principal.');
-    return;
-  }
-
-  if (input === 'exit_flow' || inputLower === 'salir') {
-    await exitConversation(from, session);
-    return;
-  }
-
-  if (inputLower === 'cancelar' || input === 'menu_cancel' || input === 'cancel_flow') {
-    if (session?.employee?.userName) {
-      await persistEmployeeProfile(from, session.employee);
-    }
-
-    clearSession(from);
-    await sendTextMessage(from, 'Solicitud cancelada correctamente');
-    return;
-  }
-
-  if (!session) {
-    try {
-      const restored = await restoreSessionFromProfile(from, messageId);
-
-      if (restored?.session) {
-        await sendMainMenu(
-          from,
-          restored.session,
-          `Hola ${getEmployeeDisplayName(restored.session.employee)}. Te reconoci por tu perfil guardado.`
-        );
-        return;
-      }
-    } catch (error) {
-      console.error('[PROFILE] Error restaurando perfil:', describeHttpError(error));
-    }
-
-    session = buildInitialSession(from, messageId);
-    saveSession(from, session);
-    await sendMainMenu(from, session);
-    return;
-  }
-
-  if (message.type === 'document' && session.step !== STEPS.MENU) {
-    await captureCertificateInSession(from, session, message);
-    return;
-  }
-
-  switch (session.step) {
-    case STEPS.MENU:
-      if (input === 'change_user' || inputLower === 'cambiar usuario') {
-        clearProfile(from);
-        session.employee = null;
-        resetRequestState(session);
-        session.step = STEPS.USERNAME;
-        saveSession(from, session);
-        await sendTextMessage(from, 'Perfil olvidado. Escribe tu username corporativo');
-        return;
-      }
-
-      if (input !== 'menu_start' && inputLower !== 'nueva solicitud' && inputLower !== 'iniciar') {
-        await sendMainMenu(from, session);
-        return;
-      }
-
-      resetRequestState(session);
-
-      if (session.employee) {
-        await sendStartDatePicker(from, session);
-        return;
-      }
-
-      session.step = STEPS.USERNAME;
-      saveSession(from, session);
-      await sendTextMessage(from, 'Escribe tu username corporativo');
+  try {
+    if (inputLower === 'menu') {
+      await resetConversationToMenu(from, session?.employee, 'Volvimos al menu principal.', messageId);
       return;
+    }
 
-    case STEPS.USERNAME:
-      if (!plainText) {
-        await sendTextMessage(from, 'Debes escribir tu username');
-        return;
+    if (session?.lastCreateError && (
+      input === 'menu_start' ||
+      input === 'cancel_flow' ||
+      inputLower === 'cancelar'
+    )) {
+      await resetConversationToMenu(from, session.employee, 'Volvimos al menu principal.', messageId);
+      return;
+    }
+
+    if (input === 'exit_flow' || inputLower === 'salir') {
+      await exitConversation(from, session);
+      return;
+    }
+
+    if (inputLower === 'cancelar' || input === 'menu_cancel' || input === 'cancel_flow') {
+      if (session?.employee?.userName) {
+        await persistEmployeeProfile(from, session.employee);
       }
 
-      try {
-        const apiResponse = await getUserData(plainText);
-        const employee = hydrateEmployee(parseApiUser(apiResponse), plainText);
+      clearSession(from);
+      await sendTextMessage(from, 'Solicitud cancelada correctamente');
+      return;
+    }
 
-        if (!employee) {
-          await sendTextMessage(from, 'No encontre un usuario con ese username. Intenta nuevamente');
+    if (!session) {
+      try {
+        const restored = await restoreSessionFromProfile(from, messageId);
+
+        if (restored?.session) {
+          await sendMainMenu(
+            from,
+            restored.session,
+            `Hola ${getEmployeeDisplayName(restored.session.employee)}. Te reconoci por tu perfil guardado.`
+          );
+          return;
+        }
+      } catch (error) {
+        console.error('[PROFILE] Error restaurando perfil:', describeHttpError(error));
+      }
+
+      session = buildInitialSession(from, messageId);
+      saveSession(from, session);
+      await sendMainMenu(from, session);
+      return;
+    }
+
+    if (message.type === 'document' && session.step !== STEPS.MENU) {
+      await captureCertificateInSession(from, session, message);
+      return;
+    }
+
+    switch (session.step) {
+      case STEPS.MENU:
+        if (input === 'change_user' || inputLower === 'cambiar usuario') {
+          clearProfile(from);
+          session.employee = null;
+          resetRequestState(session);
+          session.step = STEPS.USERNAME;
+          saveSession(from, session);
+          await sendTextMessage(from, 'Perfil olvidado. Escribe tu username corporativo');
           return;
         }
 
-        session.employee = employee;
-        session.step = STEPS.CONFIRM_PROFILE;
+        if (input !== 'menu_start' && inputLower !== 'nueva solicitud' && inputLower !== 'iniciar') {
+          await sendMainMenu(from, session);
+          return;
+        }
+
+        resetRequestState(session);
+
+        if (session.employee) {
+          await sendStartDatePicker(from, session);
+          return;
+        }
+
+        session.step = STEPS.USERNAME;
+        saveSession(from, session);
+        await sendTextMessage(from, 'Escribe tu username corporativo');
+        return;
+
+      case STEPS.USERNAME:
+        if (!plainText) {
+          await sendTextMessage(from, 'Debes escribir tu username');
+          return;
+        }
+
+        try {
+          const apiResponse = await getUserData(plainText);
+          const employee = hydrateEmployee(parseApiUser(apiResponse), plainText);
+
+          if (!employee) {
+            await sendTextMessage(from, 'No encontre un usuario con ese username. Intenta nuevamente');
+            return;
+          }
+
+          session.employee = employee;
+          session.step = STEPS.CONFIRM_PROFILE;
+          session.lastCreateError = null;
+          saveSession(from, session);
+
+          await sendButtonsMessage(
+            from,
+            `Encontre estos datos:\n\n${employeeSummary(employee)}\n\nSon correctos?`,
+            [
+              { id: 'profile_ok', title: 'Si' },
+              { id: 'profile_retry', title: 'No' }
+            ]
+          );
+        } catch (error) {
+          console.error('[BOT][GET_USER] Error consultando getUserData:', describeHttpError(error));
+          await sendTextMessage(from, 'No pude consultar tus datos en este momento');
+        }
+        return;
+
+      case STEPS.CONFIRM_PROFILE:
+        if (input === 'profile_retry') {
+          clearProfile(from);
+          session.employee = null;
+          resetRequestState(session);
+          session.step = STEPS.USERNAME;
+          saveSession(from, session);
+          await sendTextMessage(from, 'Perfecto. Escribe nuevamente tu username');
+          return;
+        }
+
+        if (input !== 'profile_ok') {
+          await sendTextMessage(from, 'Selecciona una opcion valida');
+          return;
+        }
+
+        await persistEmployeeProfile(from, session.employee);
+        resetRequestState(session);
+        await sendStartDatePicker(from, session);
+        return;
+
+      case STEPS.START_DATE_PICK: {
+        const selectedStartDate = parseSelectedDate(input, plainText);
+        const start = parseDate(selectedStartDate);
+
+        if (!start) {
+          await sendStartDatePicker(from, session, DATE_PICKER_BODY);
+          return;
+        }
+
+        if (isWeekend(start)) {
+          await sendStartDatePicker(from, session, 'No se permiten fechas en fin de semana. Elige una fecha habil.');
+          return;
+        }
+
+        session.request.startDate = selectedStartDate;
+        session.request.endDate = '';
+        session.request.requestedDays = 0;
+        await sendEndDatePicker(from, session);
+        return;
+      }
+
+      case STEPS.END_DATE_PICK: {
+        const selectedEndDate = parseSelectedDate(input, plainText);
+        const end = parseDate(selectedEndDate);
+        const start = parseDate(session.request.startDate);
+
+        if (!end || !start) {
+          await sendEndDatePicker(from, session, DATE_PICKER_BODY);
+          return;
+        }
+
+        if (isWeekend(end)) {
+          await sendEndDatePicker(from, session, 'No se permiten fechas en fin de semana. Elige una fecha habil.');
+          return;
+        }
+
+        if (end.isBefore(start, 'day')) {
+          await sendEndDatePicker(from, session, 'La fecha fin no puede ser menor a la fecha inicio');
+          return;
+        }
+
+        session.request.endDate = selectedEndDate;
+        session.request.requestedDays = calculateWorkingDays(
+          session.request.startDate,
+          session.request.endDate
+        );
+        session.step = STEPS.REASON;
+        saveSession(from, session);
+
+        await sendTextMessage(from, 'Escribe el motivo de tus vacaciones');
+        return;
+      }
+
+      case STEPS.REASON:
+        if (!plainText) {
+          await sendTextMessage(from, 'Debes escribir un motivo');
+          return;
+        }
+
+        session.request.reason = plainText;
+        session.step = STEPS.CERT_MED;
         session.lastCreateError = null;
         saveSession(from, session);
 
         await sendButtonsMessage(
           from,
-          `Encontre estos datos:\n\n${employeeSummary(employee)}\n\nSon correctos?`,
+          buildCertificatePrompt(),
           [
-            { id: 'profile_ok', title: 'Si' },
-            { id: 'profile_retry', title: 'No' }
+            { id: 'cert_skip', title: 'Omitir' },
+            { id: 'cancel_flow', title: 'Cancelar' }
           ]
         );
-      } catch (error) {
-        console.error('[BOT][GET_USER] Error consultando getUserData:', describeHttpError(error));
-        await sendTextMessage(from, 'No pude consultar tus datos en este momento');
-      }
-      return;
-
-    case STEPS.CONFIRM_PROFILE:
-      if (input === 'profile_retry') {
-        clearProfile(from);
-        session.employee = null;
-        resetRequestState(session);
-        session.step = STEPS.USERNAME;
-        saveSession(from, session);
-        await sendTextMessage(from, 'Perfecto. Escribe nuevamente tu username');
         return;
-      }
 
-      if (input !== 'profile_ok') {
-        await sendTextMessage(from, 'Selecciona una opcion valida');
+      case STEPS.CERT_MED:
+        if (input === 'cert_skip' || inputLower === 'omitir') {
+          session.request.certMedMediaId = '';
+          session.request.certMedMimeType = '';
+          session.request.certMedFilename = '';
+          await moveToConfirmRequest(from, session);
+          return;
+        }
+
+        await sendTextMessage(
+          from,
+          'Adjunta el certificado como documento de WhatsApp o escribe "omitir" para continuar sin archivo'
+        );
         return;
-      }
 
-      await persistEmployeeProfile(from, session.employee);
-      resetRequestState(session);
-      await sendStartDatePicker(from, session);
-      return;
+      case STEPS.CONFIRM_REQUEST:
+        if (input !== 'request_confirm' && input !== 'retry_create') {
+          if (session.lastCreateError) {
+            await sendCreateRetryOptions(from, session.lastCreateError);
+          } else {
+            await sendTextMessage(from, 'Selecciona Confirmar o Cancelar');
+          }
+          return;
+        }
 
-    case STEPS.START_DATE_PICK: {
-      const selectedStartDate = parseSelectedDate(input, plainText);
-      const start = parseDate(selectedStartDate);
+        try {
+          const requestSnapshot = { ...session.request };
+          const payload = buildCreateCasePayload(session.employee, requestSnapshot);
+          const apiResponse = await createPtoCase(payload);
+          const appUid = extractAppUid(apiResponse);
+          let certificateResult = null;
+          let attachmentError = null;
 
-      if (!start) {
-        await sendStartDatePicker(from, session, 'Selecciona una fecha de la lista o escribe DD-MM-YYYY');
+          console.log('[LURANA_CASE] Caso creado:', {
+            requestId: requestSnapshot.request_id,
+            appUid: appUid || null
+          });
+
+          if (requestSnapshot.certMedMediaId) {
+            try {
+              certificateResult = await attachCertificateIfNeeded(
+                { ...session, request: requestSnapshot },
+                appUid
+              );
+            } catch (error) {
+              attachmentError = describeHttpError(error);
+              console.error('[CERT_MED] Error adjuntando certificado:', attachmentError);
+            }
+          }
+
+          saveRequest(requestSnapshot.request_id, {
+            local_request_id: requestSnapshot.request_id,
+            phone: from,
+            app_uid: appUid || null,
+            employee: session.employee,
+            request: requestSnapshot,
+            lurana_payload: payload,
+            lurana_response: apiResponse,
+            cert_med_result: certificateResult,
+            cert_med_error: attachmentError
+          });
+
+          await persistEmployeeProfile(from, session.employee);
+
+          const confirmationLines = [
+            'Solicitud registrada correctamente.',
+            '',
+            `Dias solicitados: ${requestSnapshot.requestedDays}`
+          ];
+
+          if (appUid) {
+            confirmationLines.push(`Caso: ${appUid}`);
+          }
+
+          if (certificateResult && !certificateResult.skipped) {
+            confirmationLines.push('Certificado medico adjuntado correctamente.');
+          }
+
+          if (attachmentError) {
+            confirmationLines.push('');
+            confirmationLines.push(`Aviso: ${buildAttachmentWarning(attachmentError)}`);
+          }
+
+          resetRequestState(session);
+          session.step = STEPS.MENU;
+          saveSession(from, session);
+
+          await sendPostSuccessOptions(from, confirmationLines.join('\n'));
+        } catch (error) {
+          const detail = describeHttpError(error);
+          session.lastCreateError = detail;
+          saveSession(from, session);
+
+          console.error('[LURANA_CASE] Error creando caso:', detail);
+          await sendCreateRetryOptions(from, detail);
+        }
         return;
-      }
 
-      if (isWeekend(start)) {
-        await sendStartDatePicker(from, session, 'No se permiten fechas en fin de semana. Elige una fecha habil.');
-        return;
-      }
-
-      session.request.startDate = selectedStartDate;
-      session.request.endDate = '';
-      session.request.requestedDays = 0;
-      await sendEndDatePicker(from, session);
-      return;
+      default:
+        await resetConversationToMenu(from, session.employee, '', messageId);
     }
+  } catch (error) {
+    console.error('[BOT] Error general del flujo:', describeHttpError(error));
+    clearSession(from);
 
-    case STEPS.END_DATE_PICK: {
-      const selectedEndDate = parseSelectedDate(input, plainText);
-      const end = parseDate(selectedEndDate);
-      const start = parseDate(session.request.startDate);
-
-      if (!end || !start) {
-        await sendEndDatePicker(from, session, 'Selecciona una fecha de la lista o escribe DD-MM-YYYY');
-        return;
-      }
-
-      if (isWeekend(end)) {
-        await sendEndDatePicker(from, session, 'No se permiten fechas en fin de semana. Elige una fecha habil.');
-        return;
-      }
-
-      if (end.isBefore(start, 'day')) {
-        await sendEndDatePicker(from, session, 'La fecha fin no puede ser menor a la fecha inicio');
-        return;
-      }
-
-      session.request.endDate = selectedEndDate;
-      session.request.requestedDays = calculateWorkingDays(
-        session.request.startDate,
-        session.request.endDate
-      );
-      session.step = STEPS.REASON;
-      saveSession(from, session);
-
-      await sendTextMessage(from, 'Escribe el motivo de tus vacaciones');
-      return;
-    }
-
-    case STEPS.REASON:
-      if (!plainText) {
-        await sendTextMessage(from, 'Debes escribir un motivo');
-        return;
-      }
-
-      session.request.reason = plainText;
-      session.step = STEPS.CERT_MED;
-      session.lastCreateError = null;
-      saveSession(from, session);
-
-      await sendButtonsMessage(
-        from,
-        buildCertificatePrompt(),
-        [
-          { id: 'cert_skip', title: 'Omitir' },
-          { id: 'cancel_flow', title: 'Cancelar' }
-        ]
-      );
-      return;
-
-    case STEPS.CERT_MED:
-      if (input === 'cert_skip' || inputLower === 'omitir') {
-        session.request.certMedMediaId = '';
-        session.request.certMedMimeType = '';
-        session.request.certMedFilename = '';
-        await moveToConfirmRequest(from, session);
-        return;
-      }
-
+    try {
       await sendTextMessage(
         from,
-        'Adjunta el certificado como documento de WhatsApp o escribe "omitir" para continuar sin archivo'
+        "Tuve un problema enviando el siguiente paso. Escribe 'menu' para volver a empezar."
       );
-      return;
-
-    case STEPS.CONFIRM_REQUEST:
-      if (input !== 'request_confirm' && input !== 'retry_create') {
-        if (session.lastCreateError) {
-          await sendCreateRetryOptions(from, session.lastCreateError);
-        } else {
-          await sendTextMessage(from, 'Selecciona Confirmar o Cancelar');
-        }
-        return;
-      }
-
-      try {
-        const requestSnapshot = { ...session.request };
-        const payload = buildCreateCasePayload(session.employee, requestSnapshot);
-        const apiResponse = await createPtoCase(payload);
-        const appUid = extractAppUid(apiResponse);
-        let certificateResult = null;
-        let attachmentError = null;
-
-        console.log('[LURANA_CASE] Caso creado:', {
-          requestId: requestSnapshot.request_id,
-          appUid: appUid || null
-        });
-
-        if (requestSnapshot.certMedMediaId) {
-          try {
-            certificateResult = await attachCertificateIfNeeded(
-              { ...session, request: requestSnapshot },
-              appUid
-            );
-          } catch (error) {
-            attachmentError = describeHttpError(error);
-            console.error('[CERT_MED] Error adjuntando certificado:', attachmentError);
-          }
-        }
-
-        saveRequest(requestSnapshot.request_id, {
-          local_request_id: requestSnapshot.request_id,
-          phone: from,
-          app_uid: appUid || null,
-          employee: session.employee,
-          request: requestSnapshot,
-          lurana_payload: payload,
-          lurana_response: apiResponse,
-          cert_med_result: certificateResult,
-          cert_med_error: attachmentError
-        });
-
-        await persistEmployeeProfile(from, session.employee);
-
-        const confirmationLines = [
-          'Solicitud registrada correctamente.',
-          '',
-          `Dias solicitados: ${requestSnapshot.requestedDays}`
-        ];
-
-        if (appUid) {
-          confirmationLines.push(`Caso: ${appUid}`);
-        }
-
-        if (certificateResult && !certificateResult.skipped) {
-          confirmationLines.push('Certificado medico adjuntado correctamente.');
-        }
-
-        if (attachmentError) {
-          confirmationLines.push('');
-          confirmationLines.push(`Aviso: ${buildAttachmentWarning(attachmentError)}`);
-        }
-
-        resetRequestState(session);
-        session.step = STEPS.MENU;
-        saveSession(from, session);
-
-        await sendPostSuccessOptions(from, confirmationLines.join('\n'));
-      } catch (error) {
-        const detail = describeHttpError(error);
-        session.lastCreateError = detail;
-        saveSession(from, session);
-
-        console.error('[LURANA_CASE] Error creando caso:', detail);
-        await sendCreateRetryOptions(from, detail);
-      }
-      return;
-
-    default:
-      await resetConversationToMenu(from, session.employee);
+    } catch (fallbackError) {
+      console.error('[BOT] Error enviando fallback:', describeHttpError(fallbackError));
+    }
   }
 }
 
