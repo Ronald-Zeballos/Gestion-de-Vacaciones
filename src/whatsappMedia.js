@@ -4,6 +4,7 @@ const path = require('path');
 const axios = require('axios');
 const { pipeline } = require('stream/promises');
 const config = require('./config');
+const { setLastWhatsAppMedia } = require('./debugStore');
 
 const MIME_EXTENSION_MAP = {
   'application/pdf': '.pdf',
@@ -120,20 +121,43 @@ async function downloadMediaToTemp(url, filenameHint) {
 }
 
 async function downloadWhatsAppMediaById(mediaId, filenameHint = '') {
-  const meta = await getMediaMeta(mediaId);
-  const download = await downloadMediaToTemp(
-    meta.url,
-    filenameHint || `wa-media-${mediaId}`
-  );
+  try {
+    const meta = await getMediaMeta(mediaId);
+    const download = await downloadMediaToTemp(
+      meta.url,
+      filenameHint || `wa-media-${mediaId}`
+    );
 
-  return {
-    filePath: download.filePath,
-    meta: {
-      ...meta,
-      filename: download.filename,
-      size: download.size
-    }
-  };
+    const result = {
+      filePath: download.filePath,
+      meta: {
+        ...meta,
+        filename: download.filename,
+        size: download.size
+      }
+    };
+
+    setLastWhatsAppMedia({
+      mediaId,
+      meta: result.meta,
+      error: null
+    });
+
+    return result;
+  } catch (error) {
+    setLastWhatsAppMedia({
+      mediaId,
+      meta: null,
+      error: {
+        message: error?.message || 'Unknown error',
+        code: error?.code || null,
+        status: error?.response?.status || null,
+        data: error?.response?.data || null
+      }
+    });
+
+    throw error;
+  }
 }
 
 module.exports = {

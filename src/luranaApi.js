@@ -4,6 +4,10 @@ const axios = require('axios');
 const FormData = require('form-data');
 const config = require('./config');
 const { getAccessToken } = require('./luranaAuth');
+const {
+  setLastUserLookup,
+  setLastCreateCase
+} = require('./debugStore');
 
 function apiBase() {
   if (!config.luranaApiBaseUrl || !config.luranaWorkspace) {
@@ -61,26 +65,74 @@ function extractAppUid(responseData) {
   return candidates[0] || '';
 }
 
+function serializeAxiosError(error) {
+  return {
+    message: error?.message || 'Unknown error',
+    code: error?.code || null,
+    status: error?.response?.status || null,
+    statusText: error?.response?.statusText || null,
+    data: error?.response?.data || null
+  };
+}
+
 async function getUserData(username) {
   const url = `${apiBase()}/plugin-PsManagementTools/getUserData/${encodeURIComponent(username)}`;
-  const response = await axios.get(url, {
-    headers: await authHeaders({ 'Content-Type': 'application/json' }),
-    timeout: 15000,
-    maxRedirects: 0
-  });
+  try {
+    const response = await axios.get(url, {
+      headers: await authHeaders({ 'Content-Type': 'application/json' }),
+      timeout: 15000,
+      maxRedirects: 0
+    });
 
-  return response.data;
+    setLastUserLookup({
+      username,
+      response: response.data,
+      error: null
+    });
+
+    return response.data;
+  } catch (error) {
+    setLastUserLookup({
+      username,
+      response: null,
+      error: error?.response?.data || error?.message || 'Unknown error'
+    });
+
+    throw error;
+  }
 }
 
 async function createPtoCase(payload) {
   const url = `${apiBase()}/plugin-PsManagementTools/createPtoCase/`;
-  const response = await axios.post(url, payload, {
-    headers: await authHeaders({ 'Content-Type': 'application/json' }),
-    timeout: 20000,
-    maxRedirects: 0
+  setLastCreateCase({
+    payload,
+    response: null,
+    error: null
   });
 
-  return response.data;
+  try {
+    const response = await axios.post(url, payload, {
+      headers: await authHeaders({ 'Content-Type': 'application/json' }),
+      timeout: 20000,
+      maxRedirects: 0
+    });
+
+    setLastCreateCase({
+      payload,
+      response: response.data,
+      error: null
+    });
+
+    return response.data;
+  } catch (error) {
+    setLastCreateCase({
+      payload,
+      response: null,
+      error: serializeAxiosError(error)
+    });
+
+    throw error;
+  }
 }
 
 async function uploadInputDocument(appUid, inpDocUid, tasUid, filePath, comment = '') {

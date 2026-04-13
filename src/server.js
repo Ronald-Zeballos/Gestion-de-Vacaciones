@@ -12,11 +12,19 @@ const {
 } = require('./luranaApi');
 const { downloadWhatsAppMediaById } = require('./whatsappMedia');
 const { describeHttpError, getHttpStatusFromError } = require('./utils');
+const {
+  getLastUserLookup,
+  getLastCreateCase,
+  getLastWhatsAppMedia,
+  clearDebugStore
+} = require('./debugStore');
 
 const app = express();
 
 app.use(express.json({ limit: '10mb' }));
 ensureDirectories();
+
+const isDebugModeEnabled = process.env.DEBUG_MODE === 'true';
 
 function buildErrorResponse(error) {
   return {
@@ -99,9 +107,22 @@ app.get('/health', (req, res) => {
   res.json({
     ok: true,
     service: 'whatsapp-vacaciones-bot',
-    port: config.port
+    port: config.port,
+    debugMode: isDebugModeEnabled
   });
 });
+
+function requireDebugMode(req, res, next) {
+  if (!isDebugModeEnabled) {
+    return res.status(404).json({
+      error: {
+        message: 'Not found'
+      }
+    });
+  }
+
+  return next();
+}
 
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
@@ -126,6 +147,35 @@ app.get('/test-lurana-user/:username', async (req, res) => {
     console.error('[TEST][LURANA_USER] Error:', describeHttpError(error));
     res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
   }
+});
+
+app.get('/debug/last-userlookup', requireDebugMode, (req, res) => {
+  res.json({
+    ok: true,
+    data: getLastUserLookup()
+  });
+});
+
+app.get('/debug/last-createcase', requireDebugMode, (req, res) => {
+  res.json({
+    ok: true,
+    data: getLastCreateCase()
+  });
+});
+
+app.get('/debug/last-media', requireDebugMode, (req, res) => {
+  res.json({
+    ok: true,
+    data: getLastWhatsAppMedia()
+  });
+});
+
+app.get('/debug/clear', requireDebugMode, (req, res) => {
+  clearDebugStore();
+  res.json({
+    ok: true,
+    cleared: true
+  });
 });
 
 app.post('/test-lurana-case', async (req, res) => {
@@ -254,4 +304,5 @@ app.post('/webhook', async (req, res) => {
 
 app.listen(config.port, '0.0.0.0', () => {
   console.log(`Servidor activo en puerto ${config.port}`);
+  console.log(`[DEBUG] Endpoints de debug ${isDebugModeEnabled ? 'habilitados' : 'deshabilitados'}`);
 });
