@@ -44,6 +44,7 @@ function normalizeIncomingMessage(message) {
   const payload = {
     from,
     type,
+    messageId: message?.id || '',
     text: '',
     interactiveId: '',
     interactiveTitle: '',

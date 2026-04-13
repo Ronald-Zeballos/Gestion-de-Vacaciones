@@ -71,6 +71,17 @@ function parseDateOptionId(value) {
   return parseDate(match[1]);
 }
 
+function parseDateFromInput(input, text) {
+  const dateFromId = parseDateOptionId(input);
+
+  if (dateFromId) {
+    return dateFromId.format(DATE_FORMAT);
+  }
+
+  const dateFromText = parseDate(text);
+  return dateFromText ? dateFromText.format(DATE_FORMAT) : '';
+}
+
 function formatWorkingDayTitle(dateObj) {
   return `${WEEKDAY_SHORT[dateObj.day()]} ${dateObj.format('DD/MM')}`;
 }
@@ -99,6 +110,14 @@ function buildNextWorkingDaysOptions(days = 14, startFrom = null) {
   }
 
   return options;
+}
+
+function buildNextWorkingDaysRows(days = 14, startFrom = null) {
+  return buildNextWorkingDaysOptions(days, startFrom).map((option) => ({
+    id: option.id,
+    title: option.date,
+    description: WEEKDAY_SHORT[parseDate(option.date).day()] || 'Dia habil'
+  }));
 }
 
 function describeHttpError(error) {
@@ -146,9 +165,11 @@ module.exports = {
   parseDate,
   parseDateTime,
   parseDateOptionId,
+  parseDateFromInput,
   isWeekend,
   calculateWorkingDays,
   buildNextWorkingDaysOptions,
+  buildNextWorkingDaysRows,
   describeHttpError,
   getHttpStatusFromError
 };

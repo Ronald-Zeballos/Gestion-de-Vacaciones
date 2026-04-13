@@ -21,10 +21,10 @@ const {
   DATE_FORMAT,
   normalizeText,
   parseDate,
-  parseDateOptionId,
+  parseDateFromInput,
   isWeekend,
   calculateWorkingDays,
-  buildNextWorkingDaysOptions,
+  buildNextWorkingDaysRows,
   describeHttpError
 } = require('./utils');
 const {
@@ -59,14 +59,15 @@ function createEmptyRequest() {
   };
 }
 
-function buildInitialSession(phone) {
+function buildInitialSession(phone, lastProcessedMessageId = '') {
   return {
     phone,
     step: STEPS.MENU,
     startedAt: new Date().toISOString(),
     employee: null,
     request: createEmptyRequest(),
-    lastCreateError: null
+    lastCreateError: null,
+    lastProcessedMessageId
   };
 }
 
@@ -214,18 +215,14 @@ function buildProfilePayload(employee) {
   };
 }
 
-function buildDateSections(options) {
+function buildDateSections(rows) {
   const sections = [];
 
-  for (let index = 0; index < options.length; index += 10) {
-    const chunk = options.slice(index, index + 10);
+  for (let index = 0; index < rows.length; index += 10) {
+    const chunk = rows.slice(index, index + 10);
     sections.push({
       title: sections.length === 0 ? 'Proximos dias' : `Mas opciones ${index + 1}-${index + chunk.length}`,
-      rows: chunk.map((option) => ({
-        id: option.id,
-        title: option.title,
-        description: option.description || ''
-      }))
+      rows: chunk
     });
   }
 
@@ -233,7 +230,7 @@ function buildDateSections(options) {
 }
 
 function parseSelectedDate(input, plainText) {
-  return parseDateOptionId(input) || parseDate(plainText);
+  return parseDateFromInput(input, plainText);
 }
 
 async function persistEmployeeProfile(phone, employee) {
@@ -288,30 +285,38 @@ async function sendMainMenu(to, session, introText = '') {
   await sendButtonsMessage(to, lines.join('\n'), buttons);
 }
 
-async function sendStartDatePicker(to, session) {
+async function sendStartDatePicker(
+  to,
+  session,
+  body = 'Selecciona una fecha de la lista o escribe DD-MM-YYYY'
+) {
   session.step = STEPS.START_DATE_PICK;
   session.lastCreateError = null;
   saveSession(to, session);
 
-  const sections = buildDateSections(buildNextWorkingDaysOptions(14));
+  const sections = buildDateSections(buildNextWorkingDaysRows(14));
   await sendListMessage(
     to,
-    'Elige la fecha de inicio.\nSi lo prefieres, tambien puedes escribirla como DD-MM-YYYY.',
-    'Ver fechas',
+    body,
+    'Elegir fecha',
     sections
   );
 }
 
-async function sendEndDatePicker(to, session) {
+async function sendEndDatePicker(
+  to,
+  session,
+  body = 'Selecciona una fecha de la lista o escribe DD-MM-YYYY'
+) {
   session.step = STEPS.END_DATE_PICK;
   session.lastCreateError = null;
   saveSession(to, session);
 
-  const sections = buildDateSections(buildNextWorkingDaysOptions(14, session.request.startDate));
+  const sections = buildDateSections(buildNextWorkingDaysRows(14, session.request.startDate));
   await sendListMessage(
     to,
-    `Elige la fecha de fin.\nFecha de inicio seleccionada: ${session.request.startDate}`,
-    'Ver fechas',
+    `${body}\nFecha de inicio seleccionada: ${session.request.startDate}`,
+    'Elegir fecha',
     sections
   );
 }
@@ -507,14 +512,14 @@ async function attachCertificateIfNeeded(session, appUid) {
   }
 }
 
-async function resetConversationToMenu(phone, employee = null, introText = '') {
+async function resetConversationToMenu(phone, employee = null, introText = '', lastProcessedMessageId = '') {
   if (employee?.userName) {
     await persistEmployeeProfile(phone, employee);
   }
 
   clearSession(phone);
 
-  const session = buildInitialSession(phone);
+  const session = buildInitialSession(phone, lastProcessedMessageId);
   if (employee) {
     session.employee = employee;
   }
@@ -537,7 +542,7 @@ async function exitConversation(phone, session) {
   await sendTextMessage(phone, 'Hasta luego. Guarde tu perfil para la proxima.');
 }
 
-async function restoreSessionFromProfile(phone) {
+async function restoreSessionFromProfile(phone, lastProcessedMessageId = '') {
   const profile = getProfile(phone);
 
   if (!profile?.username) {
@@ -551,7 +556,7 @@ async function restoreSessionFromProfile(phone) {
     throw new Error('No se pudo reconstruir el perfil guardado');
   }
 
-  const session = buildInitialSession(phone);
+  const session = buildInitialSession(phone, lastProcessedMessageId);
   session.employee = employee;
   saveSession(phone, session);
   await persistEmployeeProfile(phone, employee);
@@ -567,10 +572,21 @@ async function processMessage(message) {
   const input = getUserInput(message);
   const plainText = normalizeText(message.text);
   const inputLower = input.toLowerCase();
+  const messageId = normalizeText(message.messageId);
 
   if (!from) return;
 
   let session = getSession(from);
+
+  if (session && messageId) {
+    if (session.lastProcessedMessageId === messageId) {
+      console.log('[DEDUPE] Mensaje duplicado ignorado:', { phone: from, messageId });
+      return;
+    }
+
+    session.lastProcessedMessageId = messageId;
+    saveSession(from, session);
+  }
 
   if (session?.lastCreateError && (
     input === 'menu_start' ||
@@ -598,7 +614,7 @@ async function processMessage(message) {
 
   if (!session) {
     try {
-      const restored = await restoreSessionFromProfile(from);
+      const restored = await restoreSessionFromProfile(from, messageId);
 
       if (restored?.session) {
         await sendMainMenu(
@@ -612,7 +628,7 @@ async function processMessage(message) {
       console.error('[PROFILE] Error restaurando perfil:', describeHttpError(error));
     }
 
-    session = buildInitialSession(from);
+    session = buildInitialSession(from, messageId);
     saveSession(from, session);
     await sendMainMenu(from, session);
     return;
@@ -708,21 +724,20 @@ async function processMessage(message) {
       return;
 
     case STEPS.START_DATE_PICK: {
-      const start = parseSelectedDate(input, plainText);
+      const selectedStartDate = parseSelectedDate(input, plainText);
+      const start = parseDate(selectedStartDate);
 
       if (!start) {
-        await sendTextMessage(from, 'Selecciona una fecha de la lista o escribe DD-MM-YYYY');
-        await sendStartDatePicker(from, session);
+        await sendStartDatePicker(from, session, 'Selecciona una fecha de la lista o escribe DD-MM-YYYY');
         return;
       }
 
       if (isWeekend(start)) {
-        await sendTextMessage(from, 'No se permiten fechas en fin de semana');
-        await sendStartDatePicker(from, session);
+        await sendStartDatePicker(from, session, 'No se permiten fechas en fin de semana. Elige una fecha habil.');
         return;
       }
 
-      session.request.startDate = start.format(DATE_FORMAT);
+      session.request.startDate = selectedStartDate;
       session.request.endDate = '';
       session.request.requestedDays = 0;
       await sendEndDatePicker(from, session);
@@ -730,28 +745,26 @@ async function processMessage(message) {
     }
 
     case STEPS.END_DATE_PICK: {
-      const end = parseSelectedDate(input, plainText);
+      const selectedEndDate = parseSelectedDate(input, plainText);
+      const end = parseDate(selectedEndDate);
       const start = parseDate(session.request.startDate);
 
       if (!end || !start) {
-        await sendTextMessage(from, 'Selecciona una fecha de la lista o escribe DD-MM-YYYY');
-        await sendEndDatePicker(from, session);
+        await sendEndDatePicker(from, session, 'Selecciona una fecha de la lista o escribe DD-MM-YYYY');
         return;
       }
 
       if (isWeekend(end)) {
-        await sendTextMessage(from, 'No se permiten fechas en fin de semana');
-        await sendEndDatePicker(from, session);
+        await sendEndDatePicker(from, session, 'No se permiten fechas en fin de semana. Elige una fecha habil.');
         return;
       }
 
       if (end.isBefore(start, 'day')) {
-        await sendTextMessage(from, 'La fecha fin no puede ser menor a la fecha inicio');
-        await sendEndDatePicker(from, session);
+        await sendEndDatePicker(from, session, 'La fecha fin no puede ser menor a la fecha inicio');
         return;
       }
 
-      session.request.endDate = end.format(DATE_FORMAT);
+      session.request.endDate = selectedEndDate;
       session.request.requestedDays = calculateWorkingDays(
         session.request.startDate,
         session.request.endDate
