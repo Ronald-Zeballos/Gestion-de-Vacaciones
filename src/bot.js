@@ -39,6 +39,9 @@ const STEPS = {
   MENU: 'MENU',
   USERNAME: 'USERNAME',
   CONFIRM_PROFILE: 'CONFIRM_PROFILE',
+  REQUEST_TYPE: 'REQUEST_TYPE',
+  TIME_UNIT: 'TIME_UNIT',
+  PERMISSION_TYPE: 'PERMISSION_TYPE',
   START_DATE_PICK: 'START_DATE_PICK',
   END_DATE_PICK: 'END_DATE_PICK',
   REASON: 'REASON',
@@ -48,9 +51,72 @@ const STEPS = {
 
 const DATE_PICKER_BODY = 'Selecciona una fecha de la lista o escribe DD-MM-YYYY';
 
+// Assumed codes based on the current plugin payload examples and UI.
+// Adjust these values if Lurana confirms a different catalog mapping.
+const REQUEST_TYPE_OPTIONS = [
+  { id: 'request_type_permiso', code: 1, title: 'Permiso', label: 'Permiso' },
+  { id: 'request_type_vacaciones', code: 2, title: 'Vacaciones', label: 'Vacaciones' }
+];
+
+const TIME_UNIT_OPTIONS = [
+  { id: 'time_unit_days', code: 1, title: 'Dias', label: 'Dias' },
+  { id: 'time_unit_hours', code: 2, title: 'Horas', label: 'Horas' }
+];
+
+const PERMISSION_TYPE_OPTIONS = [
+  {
+    id: 'permission_fallecimiento',
+    code: 3,
+    title: 'Fallecimiento',
+    label: 'Fallecimiento',
+    description: 'Padres, conyuge, hijos, hermanos'
+  },
+  {
+    id: 'permission_cumpleanos',
+    code: 4,
+    title: 'Cumpleanos',
+    label: 'Cumpleanos',
+    description: 'Media jornada'
+  },
+  {
+    id: 'permission_matrimonio',
+    code: 5,
+    title: 'Matrimonio',
+    label: 'Matrimonio',
+    description: '3 dias laborables'
+  },
+  {
+    id: 'permission_salud',
+    code: 6,
+    title: 'Salud',
+    label: 'Salud',
+    description: 'Permiso por salud'
+  },
+  {
+    id: 'permission_maternidad',
+    code: 7,
+    title: 'Maternidad',
+    label: 'Maternidad',
+    description: 'Permiso de maternidad'
+  },
+  {
+    id: 'permission_otros',
+    code: 8,
+    title: 'Otros',
+    label: 'Otros',
+    description: 'Otro tipo de permiso'
+  }
+];
+
 function createEmptyRequest() {
   return {
     request_id: uuidv4(),
+    typeRequestCode: null,
+    typeRequestLabel: '',
+    timeUnitCode: null,
+    timeUnitLabel: '',
+    typePermissionCode: null,
+    typePermissionLabel: '',
     startDate: '',
     endDate: '',
     reason: '',
@@ -101,6 +167,51 @@ function hydrateEmployee(rawEmployee, username) {
   };
 }
 
+function findOptionById(options, optionId) {
+  return options.find((option) => option.id === optionId) || null;
+}
+
+function findOptionByCode(options, optionCode) {
+  return options.find((option) => option.code === Number(optionCode)) || null;
+}
+
+function getRequestTypeOption(request) {
+  return findOptionByCode(REQUEST_TYPE_OPTIONS, request?.typeRequestCode) || REQUEST_TYPE_OPTIONS[0];
+}
+
+function getTimeUnitOption(request) {
+  return findOptionByCode(TIME_UNIT_OPTIONS, request?.timeUnitCode) || TIME_UNIT_OPTIONS[0];
+}
+
+function getPermissionTypeOption(request) {
+  return findOptionByCode(PERMISSION_TYPE_OPTIONS, request?.typePermissionCode) || null;
+}
+
+function isVacationRequest(request) {
+  return getRequestTypeOption(request).code === REQUEST_TYPE_OPTIONS[1].code;
+}
+
+function buildPermissionTypeSections() {
+  return [
+    {
+      title: 'Tipos de permiso',
+      rows: PERMISSION_TYPE_OPTIONS.map((option) => ({
+        id: option.id,
+        title: option.title,
+        description: option.description
+      }))
+    }
+  ];
+}
+
+function buildReasonPrompt(request) {
+  if (getTimeUnitOption(request).code === TIME_UNIT_OPTIONS[1].code) {
+    return 'Escribe el motivo o comentario y detalla tambien el rango horario solicitado';
+  }
+
+  return 'Escribe el motivo o comentario de la solicitud';
+}
+
 function employeeSummary(employee) {
   return [
     `Empleado: ${(employee.firstName || employee.userName || '').trim()} ${(employee.lastName || '').trim()}`.trim(),
@@ -116,24 +227,37 @@ function getEmployeeDisplayName(employee) {
 function buildRequestSummary(session) {
   const employee = session.employee;
   const request = session.request;
+  const requestType = getRequestTypeOption(request);
+  const timeUnit = getTimeUnitOption(request);
+  const permissionType = getPermissionTypeOption(request);
   const certificateStatus = request.certMedMediaId
     ? `Adjuntado${request.certMedFilename ? `: ${request.certMedFilename}` : ''}`
     : 'No adjuntado';
+  const requestedAmountLabel = timeUnit.code === TIME_UNIT_OPTIONS[1].code
+    ? 'Cantidad referencial'
+    : 'Dias solicitados';
 
   return [
     'Resumen de solicitud',
     '',
     `Empleado: ${(employee.firstName || employee.userName || '').trim()} ${(employee.lastName || '').trim()}`.trim(),
     `Correo: ${employee.email || ''}`,
+    `Tipo de solicitud: ${request.typeRequestLabel || requestType.label}`,
+    `Unidad de tiempo: ${request.timeUnitLabel || timeUnit.label}`,
+    `Tipo de permiso: ${isVacationRequest(request) ? 'No aplica' : (request.typePermissionLabel || permissionType?.label || 'Pendiente')}`,
     `Fecha inicio: ${request.startDate}`,
     `Fecha fin: ${request.endDate}`,
-    `Dias solicitados: ${request.requestedDays}`,
+    `${requestedAmountLabel}: ${request.requestedDays}`,
     `Motivo: ${request.reason}`,
     `Certificado medico: ${certificateStatus}`
   ].join('\n');
 }
 
 function buildCreateCasePayload(employee, request) {
+  const requestType = getRequestTypeOption(request);
+  const timeUnit = getTimeUnitOption(request);
+  const permissionType = getPermissionTypeOption(request);
+
   return {
     pro_uid: config.luranaProUid,
     tas_uid: config.luranaTasUid,
@@ -144,9 +268,9 @@ function buildCreateCasePayload(employee, request) {
         firstName: employee.firstName || employee.userName || '',
         lastName: employee.lastName || '',
         email: employee.email || '',
-        typeRequest: 1,
-        daysHours: 1,
-        typePermission: 3,
+        typeRequest: requestType.code,
+        daysHours: timeUnit.code,
+        typePermission: isVacationRequest(request) ? 0 : (permissionType?.code || PERMISSION_TYPE_OPTIONS[0].code),
         reason: request.reason,
         startDate: request.startDate,
         endDate: request.endDate
@@ -282,6 +406,63 @@ async function sendMainMenu(to, session, introText = '') {
   await sendButtonsMessage(to, lines.join('\n'), buttons);
 }
 
+async function sendRequestTypePrompt(
+  to,
+  session,
+  body = 'Selecciona el tipo de solicitud'
+) {
+  session.step = STEPS.REQUEST_TYPE;
+  session.lastCreateError = null;
+  saveSession(to, session);
+
+  await sendButtonsMessage(
+    to,
+    body,
+    [
+      { id: REQUEST_TYPE_OPTIONS[0].id, title: REQUEST_TYPE_OPTIONS[0].title },
+      { id: REQUEST_TYPE_OPTIONS[1].id, title: REQUEST_TYPE_OPTIONS[1].title },
+      { id: 'cancel_flow', title: 'Cancelar' }
+    ]
+  );
+}
+
+async function sendTimeUnitPrompt(
+  to,
+  session,
+  body = 'Selecciona la unidad de tiempo'
+) {
+  session.step = STEPS.TIME_UNIT;
+  session.lastCreateError = null;
+  saveSession(to, session);
+
+  await sendButtonsMessage(
+    to,
+    body,
+    [
+      { id: TIME_UNIT_OPTIONS[0].id, title: TIME_UNIT_OPTIONS[0].title },
+      { id: TIME_UNIT_OPTIONS[1].id, title: TIME_UNIT_OPTIONS[1].title },
+      { id: 'cancel_flow', title: 'Cancelar' }
+    ]
+  );
+}
+
+async function sendPermissionTypePrompt(
+  to,
+  session,
+  body = 'Selecciona el tipo de permiso'
+) {
+  session.step = STEPS.PERMISSION_TYPE;
+  session.lastCreateError = null;
+  saveSession(to, session);
+
+  await sendListMessage(
+    to,
+    body,
+    'Elegir tipo',
+    buildPermissionTypeSections()
+  );
+}
+
 async function sendStartDatePicker(
   to,
   session,
@@ -373,6 +554,18 @@ async function resumeCurrentStep(phone, session) {
       );
       return;
 
+    case STEPS.REQUEST_TYPE:
+      await sendRequestTypePrompt(phone, session);
+      return;
+
+    case STEPS.TIME_UNIT:
+      await sendTimeUnitPrompt(phone, session);
+      return;
+
+    case STEPS.PERMISSION_TYPE:
+      await sendPermissionTypePrompt(phone, session);
+      return;
+
     case STEPS.START_DATE_PICK:
       await sendStartDatePicker(phone, session);
       return;
@@ -382,7 +575,7 @@ async function resumeCurrentStep(phone, session) {
       return;
 
     case STEPS.REASON:
-      await sendTextMessage(phone, 'Escribe el motivo de tus vacaciones');
+      await sendTextMessage(phone, buildReasonPrompt(session.request));
       return;
 
     case STEPS.CERT_MED:
@@ -653,12 +846,12 @@ async function processMessage(message) {
           return;
         }
 
-        resetRequestState(session);
+      resetRequestState(session);
 
-        if (session.employee) {
-          await sendStartDatePicker(from, session);
-          return;
-        }
+      if (session.employee) {
+        await sendRequestTypePrompt(from, session);
+        return;
+      }
 
         session.step = STEPS.USERNAME;
         saveSession(from, session);
@@ -713,15 +906,68 @@ async function processMessage(message) {
         if (input !== 'profile_ok') {
           await sendTextMessage(from, 'Selecciona una opcion valida');
           return;
-        }
+      }
 
-        await persistEmployeeProfile(from, session.employee);
-        resetRequestState(session);
+      await persistEmployeeProfile(from, session.employee);
+      resetRequestState(session);
+      await sendRequestTypePrompt(from, session);
+      return;
+
+    case STEPS.REQUEST_TYPE: {
+      const selectedRequestType = findOptionById(REQUEST_TYPE_OPTIONS, input);
+
+      if (!selectedRequestType) {
+        await sendRequestTypePrompt(from, session, 'Selecciona el tipo de solicitud');
+        return;
+      }
+
+      session.request.typeRequestCode = selectedRequestType.code;
+      session.request.typeRequestLabel = selectedRequestType.label;
+      session.request.typePermissionCode = null;
+      session.request.typePermissionLabel = '';
+      await sendTimeUnitPrompt(from, session);
+      return;
+    }
+
+    case STEPS.TIME_UNIT: {
+      const selectedTimeUnit = findOptionById(TIME_UNIT_OPTIONS, input);
+
+      if (!selectedTimeUnit) {
+        await sendTimeUnitPrompt(from, session, 'Selecciona la unidad de tiempo');
+        return;
+      }
+
+      session.request.timeUnitCode = selectedTimeUnit.code;
+      session.request.timeUnitLabel = selectedTimeUnit.label;
+      session.request.requestedDays = 0;
+
+      if (isVacationRequest(session.request)) {
+        session.request.typePermissionCode = 0;
+        session.request.typePermissionLabel = 'No aplica';
         await sendStartDatePicker(from, session);
         return;
+      }
 
-      case STEPS.START_DATE_PICK: {
-        const selectedStartDate = parseSelectedDate(input, plainText);
+      await sendPermissionTypePrompt(from, session);
+      return;
+    }
+
+    case STEPS.PERMISSION_TYPE: {
+      const selectedPermissionType = findOptionById(PERMISSION_TYPE_OPTIONS, input);
+
+      if (!selectedPermissionType) {
+        await sendPermissionTypePrompt(from, session, 'Selecciona el tipo de permiso');
+        return;
+      }
+
+      session.request.typePermissionCode = selectedPermissionType.code;
+      session.request.typePermissionLabel = selectedPermissionType.label;
+      await sendStartDatePicker(from, session);
+      return;
+    }
+
+    case STEPS.START_DATE_PICK: {
+      const selectedStartDate = parseSelectedDate(input, plainText);
         const start = parseDate(selectedStartDate);
 
         if (!start) {
@@ -762,22 +1008,22 @@ async function processMessage(message) {
         }
 
         session.request.endDate = selectedEndDate;
-        session.request.requestedDays = calculateWorkingDays(
-          session.request.startDate,
-          session.request.endDate
-        );
-        session.step = STEPS.REASON;
-        saveSession(from, session);
+      session.request.requestedDays = calculateWorkingDays(
+        session.request.startDate,
+        session.request.endDate
+      );
+      session.step = STEPS.REASON;
+      saveSession(from, session);
 
-        await sendTextMessage(from, 'Escribe el motivo de tus vacaciones');
+      await sendTextMessage(from, buildReasonPrompt(session.request));
+      return;
+    }
+
+    case STEPS.REASON:
+      if (!plainText) {
+        await sendTextMessage(from, 'Debes escribir un motivo o comentario');
         return;
       }
-
-      case STEPS.REASON:
-        if (!plainText) {
-          await sendTextMessage(from, 'Debes escribir un motivo');
-          return;
-        }
 
         session.request.reason = plainText;
         session.step = STEPS.CERT_MED;
