@@ -65,14 +65,8 @@ function extractAppUid(responseData) {
   return candidates[0] || '';
 }
 
-function serializeAxiosError(error) {
-  return {
-    message: error?.message || 'Unknown error',
-    code: error?.code || null,
-    status: error?.response?.status || null,
-    statusText: error?.response?.statusText || null,
-    data: error?.response?.data || null
-  };
+function getDebugErrorValue(error) {
+  return error?.response?.data || error?.message || 'Unknown error';
 }
 
 async function getUserData(username) {
@@ -95,7 +89,7 @@ async function getUserData(username) {
     setLastUserLookup({
       username,
       response: null,
-      error: error?.response?.data || error?.message || 'Unknown error'
+      error: getDebugErrorValue(error)
     });
 
     throw error;
@@ -128,7 +122,7 @@ async function createPtoCase(payload) {
     setLastCreateCase({
       payload,
       response: null,
-      error: serializeAxiosError(error)
+      error: getDebugErrorValue(error)
     });
 
     throw error;

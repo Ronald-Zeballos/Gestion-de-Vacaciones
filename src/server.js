@@ -15,8 +15,8 @@ const { describeHttpError, getHttpStatusFromError } = require('./utils');
 const {
   getLastUserLookup,
   getLastCreateCase,
-  getLastWhatsAppMedia,
-  clearDebugStore
+  getLastMedia,
+  clear
 } = require('./debugStore');
 
 const app = express();
@@ -124,6 +124,28 @@ function requireDebugMode(req, res, next) {
   return next();
 }
 
+function listRegisteredRoutes() {
+  const stack = app?._router?.stack || [];
+  const routes = [];
+
+  for (const layer of stack) {
+    if (!layer.route) {
+      continue;
+    }
+
+    const methods = Object.keys(layer.route.methods || {})
+      .filter((method) => layer.route.methods[method])
+      .map((method) => method.toUpperCase());
+
+    routes.push({
+      path: layer.route.path,
+      methods
+    });
+  }
+
+  return routes;
+}
+
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -166,15 +188,24 @@ app.get('/debug/last-createcase', requireDebugMode, (req, res) => {
 app.get('/debug/last-media', requireDebugMode, (req, res) => {
   res.json({
     ok: true,
-    data: getLastWhatsAppMedia()
+    data: getLastMedia()
   });
 });
 
 app.get('/debug/clear', requireDebugMode, (req, res) => {
-  clearDebugStore();
+  clear();
   res.json({
     ok: true,
     cleared: true
+  });
+});
+
+app.get('/routes', requireDebugMode, (req, res) => {
+  const routes = listRegisteredRoutes();
+  res.json({
+    ok: true,
+    count: routes.length,
+    routes
   });
 });
 

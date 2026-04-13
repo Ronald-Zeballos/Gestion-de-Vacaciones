@@ -1,7 +1,7 @@
 const store = {
   lastUserLookup: null,
   lastCreateCase: null,
-  lastWhatsAppMedia: null
+  lastMedia: null
 };
 
 function buildEntry(data) {
@@ -29,19 +29,19 @@ function getLastCreateCase() {
   return store.lastCreateCase;
 }
 
-function setLastWhatsAppMedia(data) {
-  store.lastWhatsAppMedia = buildEntry(data);
-  return store.lastWhatsAppMedia;
+function setLastMedia(data) {
+  store.lastMedia = buildEntry(data);
+  return store.lastMedia;
 }
 
-function getLastWhatsAppMedia() {
-  return store.lastWhatsAppMedia;
+function getLastMedia() {
+  return store.lastMedia;
 }
 
-function clearDebugStore() {
+function clear() {
   store.lastUserLookup = null;
   store.lastCreateCase = null;
-  store.lastWhatsAppMedia = null;
+  store.lastMedia = null;
 }
 
 module.exports = {
@@ -49,7 +49,10 @@ module.exports = {
   getLastUserLookup,
   setLastCreateCase,
   getLastCreateCase,
-  setLastWhatsAppMedia,
-  getLastWhatsAppMedia,
-  clearDebugStore
+  setLastMedia,
+  getLastMedia,
+  clear,
+  setLastWhatsAppMedia: setLastMedia,
+  getLastWhatsAppMedia: getLastMedia,
+  clearDebugStore: clear
 };
