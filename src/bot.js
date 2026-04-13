@@ -20,11 +20,24 @@ const {
 const {
   DATE_FORMAT,
   normalizeText,
+  todayDate,
   parseDate,
   parseDateFromInput,
+  parseMonthOptionId,
+  parseMonthPageOptionId,
+  formatMonthLabel,
+  buildUpcomingMonthRows,
+  parseDayBlockOptionId,
+  buildDayBlockRows,
+  buildMonthDayRows,
+  parseTime,
+  parseTimeOptionId,
+  parseTimeBlockOptionId,
+  buildTimeBlockRows,
+  buildTimeRows,
   isWeekend,
   calculateWorkingDays,
-  buildNextWorkingDaysRows,
+  calculateRequestedHours,
   describeHttpError
 } = require('./utils');
 const {
@@ -42,17 +55,16 @@ const STEPS = {
   REQUEST_TYPE: 'REQUEST_TYPE',
   TIME_UNIT: 'TIME_UNIT',
   PERMISSION_TYPE: 'PERMISSION_TYPE',
-  START_DATE_PICK: 'START_DATE_PICK',
-  END_DATE_PICK: 'END_DATE_PICK',
+  DATE_MONTH_PICK: 'DATE_MONTH_PICK',
+  DATE_DAY_BLOCK_PICK: 'DATE_DAY_BLOCK_PICK',
+  DATE_DAY_PICK: 'DATE_DAY_PICK',
+  TIME_BLOCK_PICK: 'TIME_BLOCK_PICK',
+  TIME_PICK: 'TIME_PICK',
   REASON: 'REASON',
   CERT_MED: 'CERT_MED',
   CONFIRM_REQUEST: 'CONFIRM_REQUEST'
 };
 
-const DATE_PICKER_BODY = 'Selecciona una fecha de la lista o escribe DD-MM-YYYY';
-
-// Assumed codes based on the current plugin payload examples and UI.
-// Adjust these values if Lurana confirms a different catalog mapping.
 const REQUEST_TYPE_OPTIONS = [
   { id: 'request_type_permiso', code: 1, title: 'Permiso', label: 'Permiso' },
   { id: 'request_type_vacaciones', code: 2, title: 'Vacaciones', label: 'Vacaciones' }
@@ -119,8 +131,16 @@ function createEmptyRequest() {
     typePermissionLabel: '',
     startDate: '',
     endDate: '',
+    startTime: '',
+    endTime: '',
     reason: '',
     requestedDays: 0,
+    pendingDateField: '',
+    pendingMonthKey: '',
+    pendingMonthPage: 0,
+    pendingDayBlockIndex: null,
+    pendingTimeField: '',
+    pendingTimeBlockIndex: null,
     certMedMediaId: '',
     certMedMimeType: '',
     certMedFilename: ''
@@ -191,25 +211,143 @@ function isVacationRequest(request) {
   return getRequestTypeOption(request).code === REQUEST_TYPE_OPTIONS[1].code;
 }
 
-function buildPermissionTypeSections() {
+function isHoursRequest(request) {
+  return getTimeUnitOption(request).code === TIME_UNIT_OPTIONS[1].code;
+}
+
+function buildListSections(title, rows) {
   return [
     {
-      title: 'Tipos de permiso',
-      rows: PERMISSION_TYPE_OPTIONS.map((option) => ({
-        id: option.id,
-        title: option.title,
-        description: option.description
-      }))
+      title,
+      rows: rows.slice(0, 10)
     }
   ];
 }
 
+function buildPermissionTypeSections() {
+  return buildListSections(
+    'Tipos de permiso',
+    PERMISSION_TYPE_OPTIONS.map((option) => ({
+      id: option.id,
+      title: option.title,
+      description: option.description
+    }))
+  );
+}
+
 function buildReasonPrompt(request) {
-  if (getTimeUnitOption(request).code === TIME_UNIT_OPTIONS[1].code) {
-    return 'Escribe el motivo o comentario y detalla tambien el rango horario solicitado';
+  if (isHoursRequest(request)) {
+    return 'Escribe el motivo o comentario de la solicitud por horas';
   }
 
   return 'Escribe el motivo o comentario de la solicitud';
+}
+
+function buildPayloadReason(request) {
+  const baseReason = normalizeText(request.reason);
+
+  if (!isHoursRequest(request) || !request.startTime || !request.endTime) {
+    return baseReason;
+  }
+
+  const schedule = `Horario solicitado: ${request.startTime} - ${request.endTime}`;
+  return baseReason ? `${baseReason}. ${schedule}` : schedule;
+}
+
+function buildDateMonthPrompt(field) {
+  if (field === 'end') {
+    return 'Selecciona el mes de finalizacion';
+  }
+
+  if (field === 'single') {
+    return 'Selecciona el mes de la fecha solicitada';
+  }
+
+  return 'Selecciona el mes de inicio';
+}
+
+function buildDateDayBlockPrompt(monthKey) {
+  return `Selecciona el rango de dias de ${formatMonthLabel(monthKey)}`;
+}
+
+function buildDateDayPrompt(monthKey) {
+  return `Selecciona el dia de ${formatMonthLabel(monthKey)} o escribe DD-MM-YYYY`;
+}
+
+function buildTimeBlockPrompt(field) {
+  if (field === 'end') {
+    return 'Selecciona el bloque horario de finalizacion';
+  }
+
+  return 'Selecciona el bloque horario de inicio';
+}
+
+function buildTimePrompt(field) {
+  if (field === 'end') {
+    return 'Selecciona la hora de finalizacion o escribe HH:mm';
+  }
+
+  return 'Selecciona la hora de inicio o escribe HH:mm';
+}
+
+function buildRequestedAmountLabel(request) {
+  return isHoursRequest(request) ? 'Horas solicitadas' : 'Dias solicitados';
+}
+
+function formatRequestedAmount(request) {
+  const amount = Number(request?.requestedDays || 0);
+
+  if (!Number.isFinite(amount)) {
+    return '0';
+  }
+
+  const value = Number.isInteger(amount) ? String(amount) : amount.toFixed(1).replace(/\.0$/, '');
+  return value.replace('.', ',');
+}
+
+function getMinimumSelectableDate(request, field) {
+  if (field === 'end' && request?.startDate) {
+    return request.startDate;
+  }
+
+  return todayDate();
+}
+
+function clearDateSelectionState(request) {
+  request.pendingDateField = '';
+  request.pendingMonthKey = '';
+  request.pendingMonthPage = 0;
+  request.pendingDayBlockIndex = null;
+}
+
+function clearTimeSelectionState(request) {
+  request.pendingTimeField = '';
+  request.pendingTimeBlockIndex = null;
+}
+
+function resetScheduleState(request) {
+  request.startDate = '';
+  request.endDate = '';
+  request.startTime = '';
+  request.endTime = '';
+  request.requestedDays = 0;
+  clearDateSelectionState(request);
+  clearTimeSelectionState(request);
+}
+
+function parseSelectedDate(input, plainText) {
+  return parseDateFromInput(input, plainText);
+}
+
+function parseSelectedTime(input, plainText) {
+  const timeFromId = parseTimeOptionId(input);
+
+  if (timeFromId) {
+    return timeFromId.format('HH:mm');
+  }
+
+  const timeFromText = parseTime(plainText);
+  return timeFromText ? timeFromText.format('HH:mm') : '';
 }
 
 function employeeSummary(employee) {
@@ -233,24 +371,28 @@ function buildRequestSummary(session) {
   const certificateStatus = request.certMedMediaId
     ? `Adjuntado${request.certMedFilename ? `: ${request.certMedFilename}` : ''}`
     : 'No adjuntado';
-  const requestedAmountLabel = timeUnit.code === TIME_UNIT_OPTIONS[1].code
-    ? 'Cantidad referencial'
-    : 'Dias solicitados';
-
-  return [
+  const lines = [
     'Resumen de solicitud',
     '',
     `Empleado: ${(employee.firstName || employee.userName || '').trim()} ${(employee.lastName || '').trim()}`.trim(),
     `Correo: ${employee.email || ''}`,
     `Tipo de solicitud: ${request.typeRequestLabel || requestType.label}`,
     `Unidad de tiempo: ${request.timeUnitLabel || timeUnit.label}`,
-    `Tipo de permiso: ${isVacationRequest(request) ? 'No aplica' : (request.typePermissionLabel || permissionType?.label || 'Pendiente')}`,
-    `Fecha inicio: ${request.startDate}`,
-    `Fecha fin: ${request.endDate}`,
-    `${requestedAmountLabel}: ${request.requestedDays}`,
-    `Motivo: ${request.reason}`,
-    `Certificado medico: ${certificateStatus}`
-  ].join('\n');
+    `Tipo de permiso: ${isVacationRequest(request) ? 'No aplica' : (request.typePermissionLabel || permissionType?.label || 'Pendiente')}`
+  ];
+
+  if (isHoursRequest(request)) {
+    lines.push(`Fecha: ${request.startDate || 'Pendiente'}`);
+    lines.push(`Horario: ${request.startTime && request.endTime ? `${request.startTime} - ${request.endTime}` : 'Pendiente'}`);
+  } else {
+    lines.push(`Fecha inicio: ${request.startDate || 'Pendiente'}`);
+    lines.push(`Fecha fin: ${request.endDate || 'Pendiente'}`);
+  }
+
+  lines.push(`${buildRequestedAmountLabel(request)}: ${formatRequestedAmount(request)}`);
+  lines.push(`Motivo: ${request.reason || 'Pendiente'}`);
+  lines.push(`Certificado medico: ${certificateStatus}`);
+  return lines.join('\n');
 }
 
 function buildCreateCasePayload(employee, request) {
@@ -271,9 +413,9 @@ function buildCreateCasePayload(employee, request) {
         typeRequest: requestType.code,
         daysHours: timeUnit.code,
         typePermission: isVacationRequest(request) ? 0 : (permissionType?.code || PERMISSION_TYPE_OPTIONS[0].code),
-        reason: request.reason,
+        reason: buildPayloadReason(request),
         startDate: request.startDate,
-        endDate: request.endDate
+        endDate: request.endDate || request.startDate
       }
     ]
   };
@@ -341,19 +483,6 @@ function buildProfilePayload(employee) {
   };
 }
 
-function buildDateSections(rows) {
-  return [
-    {
-      title: 'Fechas',
-      rows: rows.slice(0, 10)
-    }
-  ];
-}
-
-function parseSelectedDate(input, plainText) {
-  return parseDateFromInput(input, plainText);
-}
-
 async function persistEmployeeProfile(phone, employee) {
   if (!employee?.userName) return;
   saveProfile(phone, buildProfilePayload(employee));
@@ -406,11 +535,7 @@ async function sendMainMenu(to, session, introText = '') {
   await sendButtonsMessage(to, lines.join('\n'), buttons);
 }
 
-async function sendRequestTypePrompt(
-  to,
-  session,
-  body = 'Selecciona el tipo de solicitud'
-) {
+async function sendRequestTypePrompt(to, session, body = 'Selecciona el tipo de solicitud') {
   session.step = STEPS.REQUEST_TYPE;
   session.lastCreateError = null;
   saveSession(to, session);
@@ -426,11 +551,7 @@ async function sendRequestTypePrompt(
   );
 }
 
-async function sendTimeUnitPrompt(
-  to,
-  session,
-  body = 'Selecciona la unidad de tiempo'
-) {
+async function sendTimeUnitPrompt(to, session, body = 'Selecciona la unidad de tiempo') {
   session.step = STEPS.TIME_UNIT;
   session.lastCreateError = null;
   saveSession(to, session);
@@ -446,11 +567,7 @@ async function sendTimeUnitPrompt(
   );
 }
 
-async function sendPermissionTypePrompt(
-  to,
-  session,
-  body = 'Selecciona el tipo de permiso'
-) {
+async function sendPermissionTypePrompt(to, session, body = 'Selecciona el tipo de permiso') {
   session.step = STEPS.PERMISSION_TYPE;
   session.lastCreateError = null;
   saveSession(to, session);
@@ -463,43 +580,170 @@ async function sendPermissionTypePrompt(
   );
 }
 
-async function sendStartDatePicker(
+async function sendDateMonthPrompt(
   to,
   session,
-  body = DATE_PICKER_BODY
+  field,
+  body = buildDateMonthPrompt(field),
+  page = 0
 ) {
-  session.step = STEPS.START_DATE_PICK;
+  const minDate = getMinimumSelectableDate(session.request, field);
+  const rows = buildUpcomingMonthRows(12, minDate, page, 6);
+
+  session.request.pendingDateField = field;
+  session.request.pendingMonthPage = page;
+  session.request.pendingMonthKey = '';
+  session.request.pendingDayBlockIndex = null;
+  session.step = STEPS.DATE_MONTH_PICK;
   session.lastCreateError = null;
   saveSession(to, session);
 
-  const sections = buildDateSections(buildNextWorkingDaysRows(10));
   await sendListMessage(
     to,
     body,
-    'Elegir fecha',
-    sections
+    'Elegir mes',
+    buildListSections('Meses', rows)
   );
 }
 
-async function sendEndDatePicker(
+async function sendDateDayBlockPrompt(
   to,
   session,
-  body = DATE_PICKER_BODY
+  monthKey,
+  body = buildDateDayBlockPrompt(monthKey)
 ) {
-  session.step = STEPS.END_DATE_PICK;
+  const minDate = getMinimumSelectableDate(session.request, session.request.pendingDateField);
+  const rows = buildDayBlockRows(monthKey, minDate);
+
+  if (!rows.length) {
+    await sendDateMonthPrompt(
+      to,
+      session,
+      session.request.pendingDateField || (isHoursRequest(session.request) ? 'single' : 'start'),
+      `No hay dias habilitados disponibles en ${formatMonthLabel(monthKey)}`
+    );
+    return;
+  }
+
+  session.request.pendingMonthKey = monthKey;
+  session.request.pendingDayBlockIndex = null;
+  session.step = STEPS.DATE_DAY_BLOCK_PICK;
   session.lastCreateError = null;
   saveSession(to, session);
 
-  const sections = buildDateSections(buildNextWorkingDaysRows(10, session.request.startDate));
   await sendListMessage(
     to,
     body,
-    'Elegir fecha',
-    sections
+    'Elegir rango',
+    buildListSections('Rangos', rows)
+  );
+}
+
+async function sendDateDayPrompt(
+  to,
+  session,
+  blockIndex,
+  body = buildDateDayPrompt(session.request.pendingMonthKey)
+) {
+  const minDate = getMinimumSelectableDate(session.request, session.request.pendingDateField);
+  const rows = buildMonthDayRows(session.request.pendingMonthKey, blockIndex, minDate);
+
+  if (!rows.length) {
+    await sendDateDayBlockPrompt(
+      to,
+      session,
+      session.request.pendingMonthKey,
+      'Ese rango ya no tiene dias habilitados. Selecciona otro.'
+    );
+    return;
+  }
+
+  session.request.pendingDayBlockIndex = Number(blockIndex);
+  session.step = STEPS.DATE_DAY_PICK;
+  session.lastCreateError = null;
+  saveSession(to, session);
+
+  await sendListMessage(
+    to,
+    body,
+    'Elegir dia',
+    buildListSections('Dias', rows)
+  );
+}
+
+async function sendTimeBlockPrompt(
+  to,
+  session,
+  field,
+  body = buildTimeBlockPrompt(field)
+) {
+  const minTime = field === 'end' ? session.request.startTime : null;
+  const rows = buildTimeBlockRows(minTime);
+
+  if (!rows.length) {
+    if (field === 'end') {
+      await sendTimeBlockPrompt(
+        to,
+        session,
+        'start',
+        'La hora de inicio ya no deja un rango valido. Elige otra hora de inicio.'
+      );
+      return;
+    }
+
+    await sendTextMessage(to, 'No hay horarios disponibles en este momento. Intenta nuevamente.');
+    return;
+  }
+
+  session.request.pendingTimeField = field;
+  session.request.pendingTimeBlockIndex = null;
+  session.step = STEPS.TIME_BLOCK_PICK;
+  session.lastCreateError = null;
+  saveSession(to, session);
+
+  await sendListMessage(
+    to,
+    body,
+    'Elegir bloque',
+    buildListSections('Horarios', rows)
+  );
+}
+
+async function sendTimePrompt(
+  to,
+  session,
+  blockIndex,
+  body = buildTimePrompt(session.request.pendingTimeField)
+) {
+  const minTime = session.request.pendingTimeField === 'end' ? session.request.startTime : null;
+  const rows = buildTimeRows(blockIndex, minTime);
+
+  if (!rows.length) {
+    await sendTimeBlockPrompt(
+      to,
+      session,
+      session.request.pendingTimeField || 'start',
+      'Ese bloque ya no tiene horas disponibles. Selecciona otro.'
+    );
+    return;
+  }
+
+  session.request.pendingTimeBlockIndex = Number(blockIndex);
+  session.step = STEPS.TIME_PICK;
+  session.lastCreateError = null;
+  saveSession(to, session);
+
+  await sendListMessage(
+    to,
+    body,
+    'Elegir hora',
+    buildListSections('Horas', rows)
   );
 }
 
 async function moveToConfirmRequest(phone, session) {
+  clearDateSelectionState(session.request);
+  clearTimeSelectionState(session.request);
   session.step = STEPS.CONFIRM_REQUEST;
   session.lastCreateError = null;
   saveSession(phone, session);
@@ -566,12 +810,60 @@ async function resumeCurrentStep(phone, session) {
       await sendPermissionTypePrompt(phone, session);
       return;
 
-    case STEPS.START_DATE_PICK:
-      await sendStartDatePicker(phone, session);
+    case STEPS.DATE_MONTH_PICK:
+      await sendDateMonthPrompt(
+        phone,
+        session,
+        session.request.pendingDateField || (isHoursRequest(session.request) ? 'single' : 'start'),
+        buildDateMonthPrompt(session.request.pendingDateField || (isHoursRequest(session.request) ? 'single' : 'start')),
+        session.request.pendingMonthPage || 0
+      );
       return;
 
-    case STEPS.END_DATE_PICK:
-      await sendEndDatePicker(phone, session);
+    case STEPS.DATE_DAY_BLOCK_PICK:
+      if (!session.request.pendingMonthKey) {
+        await sendDateMonthPrompt(
+          phone,
+          session,
+          session.request.pendingDateField || (isHoursRequest(session.request) ? 'single' : 'start')
+        );
+        return;
+      }
+
+      await sendDateDayBlockPrompt(phone, session, session.request.pendingMonthKey);
+      return;
+
+    case STEPS.DATE_DAY_PICK:
+      if (!session.request.pendingMonthKey) {
+        await sendDateMonthPrompt(
+          phone,
+          session,
+          session.request.pendingDateField || (isHoursRequest(session.request) ? 'single' : 'start')
+        );
+        return;
+      }
+
+      await sendDateDayPrompt(
+        phone,
+        session,
+        session.request.pendingDayBlockIndex ?? 0
+      );
+      return;
+
+    case STEPS.TIME_BLOCK_PICK:
+      await sendTimeBlockPrompt(
+        phone,
+        session,
+        session.request.pendingTimeField || 'start'
+      );
+      return;
+
+    case STEPS.TIME_PICK:
+      await sendTimePrompt(
+        phone,
+        session,
+        session.request.pendingTimeBlockIndex ?? 0
+      );
       return;
 
     case STEPS.REASON:
@@ -653,7 +945,6 @@ async function attachCertificateIfNeeded(session, appUid) {
 
   const mediaId = session.request.certMedMediaId;
   let download = null;
-  let downloadedMedia = null;
 
   try {
     console.log('[CERT_MED] Descargando certificado medico:', {
@@ -663,7 +954,7 @@ async function attachCertificateIfNeeded(session, appUid) {
       mimeType: session.request.certMedMimeType || null
     });
 
-    downloadedMedia = await downloadWhatsAppMediaById(
+    const downloadedMedia = await downloadWhatsAppMediaById(
       mediaId,
       session.request.certMedFilename || `certificado-${session.request.request_id}`
     );
@@ -752,6 +1043,118 @@ async function restoreSessionFromProfile(phone, lastProcessedMessageId = '') {
   };
 }
 
+async function completeDateSelection(phone, session, selectedDate) {
+  const dateValue = parseDate(selectedDate);
+  const field = session.request.pendingDateField || (isHoursRequest(session.request) ? 'single' : 'start');
+  const minimumDate = parseDate(getMinimumSelectableDate(session.request, field));
+
+  if (!dateValue) {
+    await sendDateMonthPrompt(phone, session, field);
+    return;
+  }
+
+  if (minimumDate && dateValue.isBefore(minimumDate, 'day')) {
+    const body = field === 'end'
+      ? 'La fecha fin no puede ser menor a la fecha inicio'
+      : 'Selecciona una fecha habilitada desde hoy';
+    await sendDateMonthPrompt(phone, session, field, body, session.request.pendingMonthPage || 0);
+    return;
+  }
+
+  if (isWeekend(dateValue)) {
+    await sendDateMonthPrompt(
+      phone,
+      session,
+      field,
+      'No se permiten fechas en fin de semana. Elige otra fecha habil.',
+      session.request.pendingMonthPage || 0
+    );
+    return;
+  }
+
+  const formattedDate = dateValue.format(DATE_FORMAT);
+  clearDateSelectionState(session.request);
+
+  if (field === 'end') {
+    const start = parseDate(session.request.startDate);
+
+    if (!start || dateValue.isBefore(start, 'day')) {
+      await sendDateMonthPrompt(phone, session, 'end', 'La fecha fin no puede ser menor a la fecha inicio');
+      return;
+    }
+
+    session.request.endDate = formattedDate;
+    session.request.requestedDays = calculateWorkingDays(
+      session.request.startDate,
+      session.request.endDate
+    );
+    session.step = STEPS.REASON;
+    session.lastCreateError = null;
+    saveSession(phone, session);
+
+    await sendTextMessage(phone, buildReasonPrompt(session.request));
+    return;
+  }
+
+  session.request.startDate = formattedDate;
+  session.request.endDate = formattedDate;
+  session.request.requestedDays = 0;
+
+  if (isHoursRequest(session.request)) {
+    session.request.startTime = '';
+    session.request.endTime = '';
+    await sendTimeBlockPrompt(phone, session, 'start');
+    return;
+  }
+
+  session.request.endDate = '';
+  await sendDateMonthPrompt(phone, session, 'end');
+}
+
+async function completeTimeSelection(phone, session, selectedTime) {
+  const timeValue = parseTime(selectedTime);
+  const field = session.request.pendingTimeField || 'start';
+
+  if (!timeValue) {
+    await sendTimeBlockPrompt(phone, session, field);
+    return;
+  }
+
+  const formattedTime = timeValue.format('HH:mm');
+  clearTimeSelectionState(session.request);
+
+  if (field === 'start') {
+    if (!buildTimeBlockRows(formattedTime).length) {
+      await sendTimeBlockPrompt(phone, session, 'start', 'Selecciona una hora de inicio que permita elegir una hora fin');
+      return;
+    }
+
+    session.request.startTime = formattedTime;
+    session.request.endTime = '';
+    session.request.requestedDays = 0;
+    await sendTimeBlockPrompt(phone, session, 'end');
+    return;
+  }
+
+  const startTime = parseTime(session.request.startTime);
+
+  if (!startTime || !timeValue.isAfter(startTime)) {
+    await sendTimeBlockPrompt(phone, session, 'end', 'La hora fin debe ser mayor a la hora inicio');
+    return;
+  }
+
+  session.request.endTime = formattedTime;
+  session.request.requestedDays = calculateRequestedHours(
+    session.request.startTime,
+    session.request.endTime
+  );
+  session.step = STEPS.REASON;
+  session.lastCreateError = null;
+  saveSession(phone, session);
+
+  await sendTextMessage(phone, buildReasonPrompt(session.request));
+}
+
 async function processMessage(message) {
   const from = normalizeText(message.from);
   const input = getUserInput(message);
@@ -772,6 +1175,7 @@ async function processMessage(message) {
     session.lastProcessedMessageId = messageId;
     saveSession(from, session);
   }
+
   try {
     if (inputLower === 'menu') {
       await resetConversationToMenu(from, session?.employee, 'Volvimos al menu principal.', messageId);
@@ -846,12 +1250,12 @@ async function processMessage(message) {
           return;
         }
 
-      resetRequestState(session);
+        resetRequestState(session);
 
-      if (session.employee) {
-        await sendRequestTypePrompt(from, session);
-        return;
-      }
+        if (session.employee) {
+          await sendRequestTypePrompt(from, session);
+          return;
+        }
 
         session.step = STEPS.USERNAME;
         saveSession(from, session);
@@ -906,124 +1310,199 @@ async function processMessage(message) {
         if (input !== 'profile_ok') {
           await sendTextMessage(from, 'Selecciona una opcion valida');
           return;
-      }
+        }
 
-      await persistEmployeeProfile(from, session.employee);
-      resetRequestState(session);
-      await sendRequestTypePrompt(from, session);
-      return;
-
-    case STEPS.REQUEST_TYPE: {
-      const selectedRequestType = findOptionById(REQUEST_TYPE_OPTIONS, input);
-
-      if (!selectedRequestType) {
-        await sendRequestTypePrompt(from, session, 'Selecciona el tipo de solicitud');
+        await persistEmployeeProfile(from, session.employee);
+        resetRequestState(session);
+        await sendRequestTypePrompt(from, session);
         return;
-      }
 
-      session.request.typeRequestCode = selectedRequestType.code;
-      session.request.typeRequestLabel = selectedRequestType.label;
-      session.request.typePermissionCode = null;
-      session.request.typePermissionLabel = '';
-      await sendTimeUnitPrompt(from, session);
-      return;
-    }
+      case STEPS.REQUEST_TYPE: {
+        const selectedRequestType = findOptionById(REQUEST_TYPE_OPTIONS, input);
 
-    case STEPS.TIME_UNIT: {
-      const selectedTimeUnit = findOptionById(TIME_UNIT_OPTIONS, input);
-
-      if (!selectedTimeUnit) {
-        await sendTimeUnitPrompt(from, session, 'Selecciona la unidad de tiempo');
-        return;
-      }
-
-      session.request.timeUnitCode = selectedTimeUnit.code;
-      session.request.timeUnitLabel = selectedTimeUnit.label;
-      session.request.requestedDays = 0;
-
-      if (isVacationRequest(session.request)) {
-        session.request.typePermissionCode = 0;
-        session.request.typePermissionLabel = 'No aplica';
-        await sendStartDatePicker(from, session);
-        return;
-      }
-
-      await sendPermissionTypePrompt(from, session);
-      return;
-    }
-
-    case STEPS.PERMISSION_TYPE: {
-      const selectedPermissionType = findOptionById(PERMISSION_TYPE_OPTIONS, input);
-
-      if (!selectedPermissionType) {
-        await sendPermissionTypePrompt(from, session, 'Selecciona el tipo de permiso');
-        return;
-      }
-
-      session.request.typePermissionCode = selectedPermissionType.code;
-      session.request.typePermissionLabel = selectedPermissionType.label;
-      await sendStartDatePicker(from, session);
-      return;
-    }
-
-    case STEPS.START_DATE_PICK: {
-      const selectedStartDate = parseSelectedDate(input, plainText);
-        const start = parseDate(selectedStartDate);
-
-        if (!start) {
-          await sendStartDatePicker(from, session, DATE_PICKER_BODY);
+        if (!selectedRequestType) {
+          await sendRequestTypePrompt(from, session, 'Selecciona el tipo de solicitud');
           return;
         }
 
-        if (isWeekend(start)) {
-          await sendStartDatePicker(from, session, 'No se permiten fechas en fin de semana. Elige una fecha habil.');
-          return;
-        }
-
-        session.request.startDate = selectedStartDate;
-        session.request.endDate = '';
-        session.request.requestedDays = 0;
-        await sendEndDatePicker(from, session);
+        session.request.typeRequestCode = selectedRequestType.code;
+        session.request.typeRequestLabel = selectedRequestType.label;
+        session.request.typePermissionCode = null;
+        session.request.typePermissionLabel = '';
+        resetScheduleState(session.request);
+        await sendTimeUnitPrompt(from, session);
         return;
       }
 
-      case STEPS.END_DATE_PICK: {
-        const selectedEndDate = parseSelectedDate(input, plainText);
-        const end = parseDate(selectedEndDate);
-        const start = parseDate(session.request.startDate);
+      case STEPS.TIME_UNIT: {
+        const selectedTimeUnit = findOptionById(TIME_UNIT_OPTIONS, input);
 
-        if (!end || !start) {
-          await sendEndDatePicker(from, session, DATE_PICKER_BODY);
+        if (!selectedTimeUnit) {
+          await sendTimeUnitPrompt(from, session, 'Selecciona la unidad de tiempo');
           return;
         }
 
-        if (isWeekend(end)) {
-          await sendEndDatePicker(from, session, 'No se permiten fechas en fin de semana. Elige una fecha habil.');
+        session.request.timeUnitCode = selectedTimeUnit.code;
+        session.request.timeUnitLabel = selectedTimeUnit.label;
+        resetScheduleState(session.request);
+
+        if (isVacationRequest(session.request)) {
+          session.request.typePermissionCode = 0;
+          session.request.typePermissionLabel = 'No aplica';
+          await sendDateMonthPrompt(
+            from,
+            session,
+            isHoursRequest(session.request) ? 'single' : 'start'
+          );
           return;
         }
 
-        if (end.isBefore(start, 'day')) {
-          await sendEndDatePicker(from, session, 'La fecha fin no puede ser menor a la fecha inicio');
-          return;
-        }
-
-        session.request.endDate = selectedEndDate;
-      session.request.requestedDays = calculateWorkingDays(
-        session.request.startDate,
-        session.request.endDate
-      );
-      session.step = STEPS.REASON;
-      saveSession(from, session);
-
-      await sendTextMessage(from, buildReasonPrompt(session.request));
-      return;
-    }
-
-    case STEPS.REASON:
-      if (!plainText) {
-        await sendTextMessage(from, 'Debes escribir un motivo o comentario');
+        session.request.typePermissionCode = null;
+        session.request.typePermissionLabel = '';
+        await sendPermissionTypePrompt(from, session);
         return;
       }
+
+      case STEPS.PERMISSION_TYPE: {
+        const selectedPermissionType = findOptionById(PERMISSION_TYPE_OPTIONS, input);
+
+        if (!selectedPermissionType) {
+          await sendPermissionTypePrompt(from, session, 'Selecciona el tipo de permiso');
+          return;
+        }
+
+        session.request.typePermissionCode = selectedPermissionType.code;
+        session.request.typePermissionLabel = selectedPermissionType.label;
+        await sendDateMonthPrompt(
+          from,
+          session,
+          isHoursRequest(session.request) ? 'single' : 'start'
+        );
+        return;
+      }
+
+      case STEPS.DATE_MONTH_PICK: {
+        const field = session.request.pendingDateField || (isHoursRequest(session.request) ? 'single' : 'start');
+        const requestedPage = parseMonthPageOptionId(input);
+
+        if (requestedPage !== null) {
+          await sendDateMonthPrompt(from, session, field, buildDateMonthPrompt(field), requestedPage);
+          return;
+        }
+
+        const selectedMonth = parseMonthOptionId(input);
+
+        if (selectedMonth) {
+          const monthKey = selectedMonth.format('YYYY-MM');
+          const minDate = getMinimumSelectableDate(session.request, field);
+          const rows = buildDayBlockRows(monthKey, minDate);
+
+          if (!rows.length) {
+            await sendDateMonthPrompt(
+              from,
+              session,
+              field,
+              `No hay dias habilitados disponibles en ${formatMonthLabel(monthKey)}`
+            );
+            return;
+          }
+
+          await sendDateDayBlockPrompt(from, session, monthKey);
+          return;
+        }
+
+        const selectedDate = parseSelectedDate(input, plainText);
+
+        if (selectedDate) {
+          await completeDateSelection(from, session, selectedDate);
+          return;
+        }
+
+        await sendDateMonthPrompt(from, session, field);
+        return;
+      }
+
+      case STEPS.DATE_DAY_BLOCK_PICK: {
+        const selectedDate = parseSelectedDate(input, plainText);
+
+        if (selectedDate) {
+          await completeDateSelection(from, session, selectedDate);
+          return;
+        }
+
+        const selectedDayBlock = parseDayBlockOptionId(input);
+
+        if (!selectedDayBlock || selectedDayBlock.monthKey !== session.request.pendingMonthKey) {
+          await sendDateDayBlockPrompt(
+            from,
+            session,
+            session.request.pendingMonthKey,
+            buildDateDayBlockPrompt(session.request.pendingMonthKey)
+          );
+          return;
+        }
+
+        await sendDateDayPrompt(from, session, selectedDayBlock.blockIndex);
+        return;
+      }
+
+      case STEPS.DATE_DAY_PICK: {
+        const selectedDate = parseSelectedDate(input, plainText);
+
+        if (!selectedDate) {
+          await sendDateDayPrompt(
+            from,
+            session,
+            session.request.pendingDayBlockIndex ?? 0
+          );
+          return;
+        }
+
+        await completeDateSelection(from, session, selectedDate);
+        return;
+      }
+
+      case STEPS.TIME_BLOCK_PICK: {
+        const field = session.request.pendingTimeField || 'start';
+        const blockIndex = parseTimeBlockOptionId(input);
+
+        if (blockIndex === null) {
+          const selectedTime = parseSelectedTime(input, plainText);
+
+          if (selectedTime) {
+            await completeTimeSelection(from, session, selectedTime);
+            return;
+          }
+
+          await sendTimeBlockPrompt(from, session, field);
+          return;
+        }
+
+        await sendTimePrompt(from, session, blockIndex);
+        return;
+      }
+
+      case STEPS.TIME_PICK: {
+        const selectedTime = parseSelectedTime(input, plainText);
+
+        if (!selectedTime) {
+          await sendTimePrompt(
+            from,
+            session,
+            session.request.pendingTimeBlockIndex ?? 0
+          );
+          return;
+        }
+
+        await completeTimeSelection(from, session, selectedTime);
+        return;
+      }
+
+      case STEPS.REASON:
+        if (!plainText) {
+          await sendTextMessage(from, 'Debes escribir un motivo o comentario');
+          return;
+        }
 
         session.request.reason = plainText;
         session.step = STEPS.CERT_MED;
@@ -1107,7 +1586,7 @@ async function processMessage(message) {
           const confirmationLines = [
             'Solicitud registrada correctamente.',
             '',
-            `Dias solicitados: ${requestSnapshot.requestedDays}`
+            `${buildRequestedAmountLabel(requestSnapshot)}: ${formatRequestedAmount(requestSnapshot)}`
           ];
 
           if (appUid) {
