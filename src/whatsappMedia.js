@@ -119,7 +119,25 @@ async function downloadMediaToTemp(url, filenameHint) {
   }
 }
 
+async function downloadWhatsAppMediaById(mediaId, filenameHint = '') {
+  const meta = await getMediaMeta(mediaId);
+  const download = await downloadMediaToTemp(
+    meta.url,
+    filenameHint || `wa-media-${mediaId}`
+  );
+
+  return {
+    filePath: download.filePath,
+    meta: {
+      ...meta,
+      filename: download.filename,
+      size: download.size
+    }
+  };
+}
+
 module.exports = {
   getMediaMeta,
-  downloadMediaToTemp
+  downloadMediaToTemp,
+  downloadWhatsAppMediaById
 };

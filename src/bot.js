@@ -24,10 +24,7 @@ const {
   uploadInputDocument,
   extractAppUid
 } = require('./luranaApi');
-const {
-  getMediaMeta,
-  downloadMediaToTemp
-} = require('./whatsappMedia');
+const { downloadWhatsAppMediaById } = require('./whatsappMedia');
 
 const STEPS = {
   MENU: 'MENU',
@@ -183,6 +180,54 @@ async function moveToConfirmRequest(phone, session) {
   );
 }
 
+function buildPromptForCurrentStep(step) {
+  switch (step) {
+    case STEPS.USERNAME:
+      return 'Ahora escribe tu username corporativo.';
+    case STEPS.CONFIRM_PROFILE:
+      return 'Ahora confirma si los datos del usuario son correctos.';
+    case STEPS.START_DATE:
+      return 'Ahora escribe la fecha de inicio en formato DD-MM-YYYY.';
+    case STEPS.END_DATE:
+      return 'Ahora escribe la fecha de fin en formato DD-MM-YYYY.';
+    case STEPS.REASON:
+      return 'Ahora escribe el motivo de la solicitud.';
+    case STEPS.CONFIRM_REQUEST:
+      return 'Cuando quieras registrarla, pulsa Confirmar.';
+    default:
+      return 'Continua con el flujo.';
+  }
+}
+
+async function captureCertificateInSession(phone, session, message) {
+  if (!message.mediaId) {
+    await sendTextMessage(phone, 'Recibi el documento, pero no encontre el mediaId. Intenta reenviarlo');
+    return true;
+  }
+
+  session.request.certMedMediaId = message.mediaId;
+  session.request.certMedMimeType = message.mimeType || message.mime_type || '';
+  session.request.certMedFilename = message.filename || '';
+  saveSession(phone, session);
+
+  console.log('[CERT_MED] Documento recibido desde WhatsApp:', {
+    phone,
+    mediaId: session.request.certMedMediaId,
+    filename: session.request.certMedFilename || null,
+    mimeType: session.request.certMedMimeType || null
+  });
+
+  await sendTextMessage(phone, 'Certificado recibido');
+
+  if (session.step === STEPS.CERT_MED || session.step === STEPS.CONFIRM_REQUEST) {
+    await moveToConfirmRequest(phone, session);
+    return true;
+  }
+
+  await sendTextMessage(phone, buildPromptForCurrentStep(session.step));
+  return true;
+}
+
 async function attachCertificateIfNeeded(session, appUid) {
   if (!session.request.certMedMediaId) {
     return {
@@ -203,21 +248,26 @@ async function attachCertificateIfNeeded(session, appUid) {
   }
 
   const mediaId = session.request.certMedMediaId;
-  const metadata = await getMediaMeta(mediaId);
   let download = null;
+  let downloadedMedia = null;
 
   try {
     console.log('[CERT_MED] Descargando certificado medico:', {
       appUid,
       mediaId,
       filename: session.request.certMedFilename || null,
-      mimeType: session.request.certMedMimeType || metadata.mimeType || null
+      mimeType: session.request.certMedMimeType || null
     });
 
-    download = await downloadMediaToTemp(
-      metadata.url,
+    downloadedMedia = await downloadWhatsAppMediaById(
+      mediaId,
       session.request.certMedFilename || `certificado-${session.request.request_id}`
     );
+    download = {
+      filePath: downloadedMedia.filePath,
+      filename: downloadedMedia.meta.filename,
+      size: downloadedMedia.meta.size
+    };
 
     const upload = await uploadInputDocument(
       appUid,
@@ -235,7 +285,7 @@ async function attachCertificateIfNeeded(session, appUid) {
 
     return {
       skipped: false,
-      metadata,
+      metadata: downloadedMedia.meta,
       download: {
         filename: download.filename,
         size: download.size
@@ -278,6 +328,11 @@ async function processMessage(message) {
     session = buildInitialSession(from);
     saveSession(from, session);
     await sendMainMenu(from);
+    return;
+  }
+
+  if (message.type === 'document' && session.step !== STEPS.MENU) {
+    await captureCertificateInSession(from, session, message);
     return;
   }
 
@@ -420,27 +475,6 @@ async function processMessage(message) {
       return;
 
     case STEPS.CERT_MED:
-      if (message.type === 'document') {
-        if (!message.mediaId) {
-          await sendTextMessage(from, 'Recibi el documento, pero no encontre el mediaId. Intenta reenviarlo');
-          return;
-        }
-
-        session.request.certMedMediaId = message.mediaId;
-        session.request.certMedMimeType = message.mimeType || message.mime_type || '';
-        session.request.certMedFilename = message.filename || '';
-
-        console.log('[CERT_MED] Documento recibido desde WhatsApp:', {
-          phone: from,
-          mediaId: session.request.certMedMediaId,
-          filename: session.request.certMedFilename || null,
-          mimeType: session.request.certMedMimeType || null
-        });
-
-        await moveToConfirmRequest(from, session);
-        return;
-      }
-
       if (input === 'cert_skip' || inputLower === 'omitir') {
         session.request.certMedMediaId = '';
         session.request.certMedMimeType = '';

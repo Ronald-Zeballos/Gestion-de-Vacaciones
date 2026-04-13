@@ -10,7 +10,7 @@ const {
   uploadInputDocument,
   extractAppUid
 } = require('./luranaApi');
-const { getMediaMeta, downloadMediaToTemp } = require('./whatsappMedia');
+const { downloadWhatsAppMediaById } = require('./whatsappMedia');
 const { describeHttpError, getHttpStatusFromError } = require('./utils');
 
 const app = express();
@@ -145,35 +145,34 @@ app.post('/test-lurana-case', async (req, res) => {
 
 app.get('/test-wa-media/:mediaId', async (req, res) => {
   const keepFile = req.query.keepFile === '1';
-  let download = null;
+  let downloadedMedia = null;
 
   try {
     const mediaId = req.params.mediaId;
-    const metadata = await getMediaMeta(mediaId);
     const filenameHint = req.query.filename || `wa-media-${mediaId}`;
 
     console.log('[TEST][WA_MEDIA] Descargando media:', { mediaId, filenameHint });
-    download = await downloadMediaToTemp(metadata.url, filenameHint);
+    downloadedMedia = await downloadWhatsAppMediaById(mediaId, filenameHint);
 
     const responsePayload = {
       ok: true,
       mediaId,
-      metadata,
+      metadata: downloadedMedia.meta,
       download: {
-        filename: path.basename(download.filePath),
-        size: download.size,
-        filePath: keepFile ? download.filePath : null
+        filename: path.basename(downloadedMedia.filePath),
+        size: downloadedMedia.meta.size,
+        filePath: keepFile ? downloadedMedia.filePath : null
       },
       cleanedUp: !keepFile
     };
 
     if (!keepFile) {
-      await deleteFileQuietly(download.filePath);
+      await deleteFileQuietly(downloadedMedia.filePath);
     }
 
     res.json(responsePayload);
   } catch (error) {
-    await deleteFileQuietly(download?.filePath);
+    await deleteFileQuietly(downloadedMedia?.filePath);
     console.error('[TEST][WA_MEDIA] Error:', describeHttpError(error));
     res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
   }
@@ -181,7 +180,7 @@ app.get('/test-wa-media/:mediaId', async (req, res) => {
 
 app.post('/test-lurana-attach', async (req, res) => {
   const { appUid, mediaId, comment } = req.body || {};
-  let download = null;
+  let downloadedMedia = null;
 
   if (!appUid || !mediaId) {
     return res.status(400).json({
@@ -192,7 +191,6 @@ app.post('/test-lurana-attach', async (req, res) => {
   }
 
   try {
-    const metadata = await getMediaMeta(mediaId);
     const filenameHint = req.body?.filename || `wa-media-${mediaId}`;
 
     console.log('[TEST][LURANA_ATTACH] Descargando media para adjuntar:', {
@@ -201,13 +199,13 @@ app.post('/test-lurana-attach', async (req, res) => {
       filenameHint
     });
 
-    download = await downloadMediaToTemp(metadata.url, filenameHint);
+    downloadedMedia = await downloadWhatsAppMediaById(mediaId, filenameHint);
 
     const upload = await uploadInputDocument(
       appUid,
       config.luranaCertInpDocUid,
       config.luranaTasUid,
-      download.filePath,
+      downloadedMedia.filePath,
       comment || `Certificado medico adjuntado desde /test-lurana-attach (${mediaId})`
     );
 
@@ -215,10 +213,10 @@ app.post('/test-lurana-attach', async (req, res) => {
       ok: true,
       appUid,
       mediaId,
-      metadata,
+      metadata: downloadedMedia.meta,
       download: {
-        filename: path.basename(download.filePath),
-        size: download.size
+        filename: path.basename(downloadedMedia.filePath),
+        size: downloadedMedia.meta.size
       },
       upload,
       cleanedUp: true
@@ -227,7 +225,7 @@ app.post('/test-lurana-attach', async (req, res) => {
     console.error('[TEST][LURANA_ATTACH] Error:', describeHttpError(error));
     res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
   } finally {
-    await deleteFileQuietly(download?.filePath);
+    await deleteFileQuietly(downloadedMedia?.filePath);
   }
 });
 
