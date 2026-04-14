@@ -175,18 +175,15 @@ function buildUpcomingMonthRows(totalMonths = 12, startFrom = null, page = 0, pa
   return rows;
 }
 
-function parseDayBlockOptionId(value) {
+function parseDayPageOptionId(value) {
   const normalizedValue = normalizeText(value);
-  const match = /^dayblock_(\d{4}-\d{2})_(\d)$/i.exec(normalizedValue);
+  const match = /^daypage_(\d+)$/i.exec(normalizedValue);
 
   if (!match) {
     return null;
   }
 
-  return {
-    monthKey: match[1],
-    blockIndex: Number(match[2])
-  };
+  return Number(match[1]);
 }
 
 function getSelectableMonthDays(monthKey, minDateStr = null) {
@@ -214,60 +211,36 @@ function getSelectableMonthDays(monthKey, minDateStr = null) {
   return days;
 }
 
-function buildDayBlockRows(monthKey, minDateStr = null) {
-  const monthDate = dayjs(`${monthKey}-01`, 'YYYY-MM-DD', true);
-
-  if (!monthDate.isValid()) {
-    return [];
-  }
-
+function buildMonthDayRows(monthKey, minDateStr = null, page = 0, pageSize = 8) {
   const selectableDays = getSelectableMonthDays(monthKey, minDateStr);
-  const blocks = [
-    { index: 0, start: 1, end: 10 },
-    { index: 1, start: 11, end: 20 },
-    { index: 2, start: 21, end: monthDate.daysInMonth() }
-  ];
-
-  return blocks.flatMap((block) => {
-    const blockDays = selectableDays.filter((day) => {
-      const currentDate = day.date();
-      return currentDate >= block.start && currentDate <= block.end;
-    });
-
-    if (!blockDays.length) {
-      return [];
-    }
-
-    return [{
-      id: `dayblock_${monthKey}_${block.index}`,
-      title: `Dias ${String(block.start).padStart(2, '0')}-${String(block.end).padStart(2, '0')}`,
-      description: `${blockDays.length} dias habil(es) disponibles`
-    }];
-  });
-}
-
-function buildMonthDayRows(monthKey, blockIndex, minDateStr = null) {
-  const blocks = [
-    { start: 1, end: 10 },
-    { start: 11, end: 20 },
-    { start: 21, end: 31 }
-  ];
-  const selectedBlock = blocks[Number(blockIndex)];
-
-  if (!selectedBlock) {
-    return [];
-  }
-
-  return getSelectableMonthDays(monthKey, minDateStr)
-    .filter((day) => {
-      const currentDate = day.date();
-      return currentDate >= selectedBlock.start && currentDate <= selectedBlock.end;
-    })
+  const safePage = Number(page) >= 0 ? Number(page) : 0;
+  const safePageSize = Number(pageSize) > 0 ? Number(pageSize) : 8;
+  const startIndex = safePage * safePageSize;
+  const rows = selectableDays
+    .slice(startIndex, startIndex + safePageSize)
     .map((day) => ({
       id: `date_${day.format('YYYY-MM-DD')}`,
-      title: day.format(DATE_FORMAT),
-      description: WEEKDAY_LONG[day.day()] || WEEKDAY_SHORT[day.day()] || 'Dia habil'
+      title: day.format('DD'),
+      description: `${WEEKDAY_LONG[day.day()] || WEEKDAY_SHORT[day.day()] || 'Dia habil'} ${day.format(DATE_FORMAT)}`
     }));
+
+  if (startIndex > 0) {
+    rows.push({
+      id: `daypage_${safePage - 1}`,
+      title: 'Dias anteriores',
+      description: 'Ver dias anteriores'
+    });
+  }
+
+  if (startIndex + safePageSize < selectableDays.length) {
+    rows.push({
+      id: `daypage_${safePage + 1}`,
+      title: 'Mas dias',
+      description: 'Ver dias siguientes'
+    });
+  }
+
+  return rows;
 }
 
 function parseTimeOptionId(value) {
@@ -281,9 +254,9 @@ function parseTimeOptionId(value) {
   return parseTime(match[1]);
 }
 
-function parseTimeBlockOptionId(value) {
+function parseTimePageOptionId(value) {
   const normalizedValue = normalizeText(value);
-  const match = /^timeblock_(\d+)$/i.exec(normalizedValue);
+  const match = /^timepage_(\d+)$/i.exec(normalizedValue);
 
   if (!match) {
     return null;
@@ -317,39 +290,36 @@ function buildTimeSlots(startTime = '08:00', endTime = '18:00', intervalMinutes 
   return slots;
 }
 
-function buildTimeBlockRows(minTime = null, blockSize = 7) {
+function buildTimeRows(minTime = null, page = 0, pageSize = 8) {
   const slots = buildTimeSlots('08:00', '18:00', 30, minTime);
-  const safeBlockSize = Number(blockSize) > 0 ? Number(blockSize) : 7;
-  const rows = [];
+  const safePage = Number(page) >= 0 ? Number(page) : 0;
+  const safePageSize = Number(pageSize) > 0 ? Number(pageSize) : 8;
+  const startIndex = safePage * safePageSize;
+  const rows = slots
+    .slice(startIndex, startIndex + safePageSize)
+    .map((timeValue) => ({
+      id: `time_${timeValue}`,
+      title: timeValue,
+      description: 'Seleccionar hora'
+    }));
 
-  for (let startIndex = 0; startIndex < slots.length; startIndex += safeBlockSize) {
-    const block = slots.slice(startIndex, startIndex + safeBlockSize);
-
-    if (!block.length) {
-      continue;
-    }
-
+  if (startIndex > 0) {
     rows.push({
-      id: `timeblock_${rows.length}`,
-      title: `${block[0]} - ${block[block.length - 1]}`,
-      description: `${block.length} horarios disponibles`
+      id: `timepage_${safePage - 1}`,
+      title: 'Horas anteriores',
+      description: 'Ver horas anteriores'
+    });
+  }
+
+  if (startIndex + safePageSize < slots.length) {
+    rows.push({
+      id: `timepage_${safePage + 1}`,
+      title: 'Mas horas',
+      description: 'Ver horas siguientes'
     });
   }
 
   return rows;
-}
-
-function buildTimeRows(blockIndex, minTime = null, blockSize = 7) {
-  const slots = buildTimeSlots('08:00', '18:00', 30, minTime);
-  const safeBlockSize = Number(blockSize) > 0 ? Number(blockSize) : 7;
-  const safeIndex = Number(blockIndex) >= 0 ? Number(blockIndex) : 0;
-  const block = slots.slice(safeIndex * safeBlockSize, (safeIndex + 1) * safeBlockSize);
-
-  return block.map((timeValue) => ({
-    id: `time_${timeValue}`,
-    title: timeValue,
-    description: 'Seleccionar hora'
-  }));
 }
 
 function calculateRequestedHours(startTimeStr, endTimeStr) {
@@ -454,12 +424,10 @@ module.exports = {
   parseMonthPageOptionId,
   formatMonthLabel,
   buildUpcomingMonthRows,
-  parseDayBlockOptionId,
-  buildDayBlockRows,
+  parseDayPageOptionId,
   buildMonthDayRows,
   parseTimeOptionId,
-  parseTimeBlockOptionId,
-  buildTimeBlockRows,
+  parseTimePageOptionId,
   buildTimeRows,
   isWeekend,
   calculateWorkingDays,
