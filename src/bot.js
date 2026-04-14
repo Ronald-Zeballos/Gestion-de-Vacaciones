@@ -395,6 +395,7 @@ function buildCreateCasePayload(employee, request) {
   const requestType = getRequestTypeOption(request);
   const timeUnit = getTimeUnitOption(request);
   const permissionType = getPermissionTypeOption(request);
+  const hasCertificate = Boolean(request.certMedMediaId);
 
   return {
     pro_uid: config.luranaProUid,
@@ -414,7 +415,11 @@ function buildCreateCasePayload(employee, request) {
         typePermissionLabel: isVacationRequest(request) ? '' : (request.typePermissionLabel || permissionType?.label || ''),
         reason: buildPayloadReason(request),
         startDate: request.startDate,
-        endDate: request.endDate || request.startDate
+        endDate: request.endDate || request.startDate,
+        certMedAttached: hasCertificate ? '1' : '0',
+        certMedFilename: request.certMedFilename || '',
+        certMedMimeType: request.certMedMimeType || '',
+        certMedMediaId: request.certMedMediaId || ''
       }
     ]
   };
@@ -422,7 +427,7 @@ function buildCreateCasePayload(employee, request) {
 
 function buildCertificatePrompt() {
   return [
-    'Adjunta tu certificado medico como documento de WhatsApp.',
+    'Adjunta tu certificado medico como documento o imagen de WhatsApp.',
     'Si no aplica, pulsa Omitir o escribe "omitir".'
   ].join('\n');
 }
@@ -818,16 +823,16 @@ async function resumeCurrentStep(phone, session) {
 
 async function captureCertificateInSession(phone, session, message) {
   if (!message.mediaId) {
-    await sendTextMessage(phone, 'Recibi el documento, pero no encontre el mediaId. Intenta reenviarlo');
+    await sendTextMessage(phone, 'Recibi el archivo, pero no encontre el mediaId. Intenta reenviarlo');
     return;
   }
 
   session.request.certMedMediaId = message.mediaId;
   session.request.certMedMimeType = message.mimeType || message.mime_type || '';
-  session.request.certMedFilename = message.filename || '';
+  session.request.certMedFilename = message.filename || `certificado-${session.request.request_id}`;
   saveSession(phone, session);
 
-  console.log('[CERT_MED] Documento recibido desde WhatsApp:', {
+  console.log('[CERT_MED] Archivo recibido desde WhatsApp:', {
     phone,
     mediaId: session.request.certMedMediaId,
     filename: session.request.certMedFilename || null,
@@ -1152,7 +1157,7 @@ async function processMessage(message) {
       return;
     }
 
-    if (message.type === 'document' && session.step !== STEPS.MENU) {
+    if ((message.type === 'document' || message.type === 'image') && session.step !== STEPS.MENU) {
       await captureCertificateInSession(from, session, message);
       return;
     }
@@ -1413,7 +1418,7 @@ async function processMessage(message) {
 
         await sendTextMessage(
           from,
-          'Adjunta el certificado como documento de WhatsApp o escribe "omitir" para continuar sin archivo'
+          'Adjunta el certificado como documento o imagen de WhatsApp, o escribe "omitir" para continuar sin archivo'
         );
         return;
 
