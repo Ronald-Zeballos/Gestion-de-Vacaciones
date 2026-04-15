@@ -61,6 +61,29 @@ const STEPS = {
   CONFIRM_REQUEST: 'CONFIRM_REQUEST'
 };
 
+const ALLOWED_CERT_MIME_TYPES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'image/jpeg',
+  'image/png'
+];
+
+const ALLOWED_CERT_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png'];
+
+function isValidCertificateFile(mimeType, filename) {
+  if (!mimeType && !filename) return false;
+  
+  const mimeTypeValid = mimeType ? ALLOWED_CERT_MIME_TYPES.includes(mimeType.toLowerCase()) : true;
+  
+  if (!filename) return mimeTypeValid;
+  
+  const fileExtension = filename.substring(filename.lastIndexOf('.')).toLowerCase();
+  const extensionValid = ALLOWED_CERT_EXTENSIONS.includes(fileExtension);
+  
+  return mimeTypeValid && extensionValid;
+}
+
 const REQUEST_TYPE_OPTIONS = [
   { id: 'request_type_vacaciones', code: 1, title: 'Vacaciones', label: 'Vacaciones' },
   { id: 'request_type_permiso', code: 2, title: 'Permiso', label: 'Permiso' }
@@ -827,9 +850,21 @@ async function captureCertificateInSession(phone, session, message) {
     return;
   }
 
+  const mimeType = message.mimeType || message.mime_type || '';
+  const filename = message.filename || `certificado-${session.request.request_id}`;
+
+  if (!isValidCertificateFile(mimeType, filename)) {
+    const allowedFormats = 'PDF, DOC, DOCX, JPG, PNG';
+    await sendTextMessage(
+      phone,
+      `El archivo no es permitido. Solo aceptamos: ${allowedFormats}\n\nIntenta con otro archivo o escribe "omitir" para continuar.`
+    );
+    return;
+  }
+
   session.request.certMedMediaId = message.mediaId;
-  session.request.certMedMimeType = message.mimeType || message.mime_type || '';
-  session.request.certMedFilename = message.filename || `certificado-${session.request.request_id}`;
+  session.request.certMedMimeType = mimeType;
+  session.request.certMedFilename = filename;
   saveSession(phone, session);
 
   console.log('[CERT_MED] Archivo recibido desde WhatsApp:', {
@@ -1393,18 +1428,30 @@ async function processMessage(message) {
         }
 
         session.request.reason = plainText;
-        session.step = STEPS.CERT_MED;
         session.lastCreateError = null;
         saveSession(from, session);
 
-        await sendButtonsMessage(
-          from,
-          buildCertificatePrompt(),
-          [
-            { id: 'cert_skip', title: 'Omitir' },
-            { id: 'cancel_flow', title: 'Cancelar' }
-          ]
-        );
+        const isSalutPermission = session.request.typePermissionCode === 4;
+        const isVacation = isVacationRequest(session.request);
+        const requiresCertificate = isSalutPermission && !isVacation;
+
+        if (requiresCertificate) {
+          session.step = STEPS.CERT_MED;
+          saveSession(from, session);
+          await sendButtonsMessage(
+            from,
+            buildCertificatePrompt(),
+            [
+              { id: 'cert_skip', title: 'Omitir' },
+              { id: 'cancel_flow', title: 'Cancelar' }
+            ]
+          );
+        } else {
+          session.request.certMedMediaId = '';
+          session.request.certMedMimeType = '';
+          session.request.certMedFilename = '';
+          await moveToConfirmRequest(from, session);
+        }
         return;
 
       case STEPS.CERT_MED:
