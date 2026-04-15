@@ -61,27 +61,31 @@ const STEPS = {
   CONFIRM_REQUEST: 'CONFIRM_REQUEST'
 };
 
-const ALLOWED_CERT_MIME_TYPES = [
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'image/jpeg',
-  'image/png'
-];
-
-const ALLOWED_CERT_EXTENSIONS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png'];
+const DENIED_CERT_EXTENSIONS = ['.exe', '.bat', '.sh', '.cmd', '.com', '.pif', '.scr', '.vbs', '.js', '.jar'];
+const DENIED_CERT_MIMETYPES = ['application/x-msdownload', 'application/x-msdos-program', 'application/x-executable', 'application/x-elf'];
 
 function isValidCertificateFile(mimeType, filename) {
+  // Si no hay ni mimeType ni filename, rechazar
   if (!mimeType && !filename) return false;
   
-  const mimeTypeValid = mimeType ? ALLOWED_CERT_MIME_TYPES.includes(mimeType.toLowerCase()) : true;
+  // Validar contra extensiones peligrosas
+  if (filename) {
+    const fileExtension = filename.substring(filename.lastIndexOf('.')).toLowerCase();
+    if (DENIED_CERT_EXTENSIONS.includes(fileExtension)) {
+      return false;
+    }
+  }
   
-  if (!filename) return mimeTypeValid;
+  // Validar contra tipos MIME peligrosos
+  if (mimeType) {
+    const mimeTypeLower = mimeType.toLowerCase();
+    if (DENIED_CERT_MIMETYPES.some(denied => mimeTypeLower.includes(denied))) {
+      return false;
+    }
+  }
   
-  const fileExtension = filename.substring(filename.lastIndexOf('.')).toLowerCase();
-  const extensionValid = ALLOWED_CERT_EXTENSIONS.includes(fileExtension);
-  
-  return mimeTypeValid && extensionValid;
+  // Si pasó las validaciones negativas, aceptar
+  return true;
 }
 
 const REQUEST_TYPE_OPTIONS = [
@@ -854,10 +858,9 @@ async function captureCertificateInSession(phone, session, message) {
   const filename = message.filename || `certificado-${session.request.request_id}`;
 
   if (!isValidCertificateFile(mimeType, filename)) {
-    const allowedFormats = 'PDF, DOC, DOCX, JPG, PNG';
     await sendTextMessage(
       phone,
-      `El archivo no es permitido. Solo aceptamos: ${allowedFormats}\n\nIntenta con otro archivo o escribe "omitir" para continuar.`
+      'El archivo no es permitido. Intenta con otro documento, imagen o archivo compatible.\n\nNo se permiten archivos ejecutables.'
     );
     return;
   }
