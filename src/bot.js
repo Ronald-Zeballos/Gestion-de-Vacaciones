@@ -5,7 +5,9 @@ const {
   getSession,
   saveSession,
   clearSession,
-  saveRequest
+  saveRequest,
+  getRequest,
+  updateRequest
 } = require('./storage');
 const {
   getProfile,
@@ -36,7 +38,9 @@ const {
   isWeekend,
   calculateWorkingDays,
   calculateRequestedHours,
-  describeHttpError
+  describeHttpError,
+  normalizePhoneNumber,
+  phoneNumbersMatch
 } = require('./utils');
 const {
   getUserData,
@@ -63,6 +67,8 @@ const STEPS = {
 
 const DENIED_CERT_EXTENSIONS = ['.exe', '.bat', '.sh', '.cmd', '.com', '.pif', '.scr', '.vbs', '.js', '.jar'];
 const DENIED_CERT_MIMETYPES = ['application/x-msdownload', 'application/x-msdos-program', 'application/x-executable', 'application/x-elf'];
+const MANAGER_APPROVE_ACTION = 'manager_approve';
+const MANAGER_REJECT_ACTION = 'manager_reject';
 
 function isValidCertificateFile(mimeType, filename) {
   // Si no hay ni mimeType ni filename, rechazar
@@ -385,6 +391,65 @@ function getEmployeeDisplayName(employee) {
   return normalizeText(employee?.firstName) || normalizeText(employee?.userName) || 'de nuevo';
 }
 
+function getEmployeeFullName(employee) {
+  const fullName = `${normalizeText(employee?.firstName)} ${normalizeText(employee?.lastName)}`.trim();
+  return fullName || normalizeText(employee?.userName) || 'Sin nombre';
+}
+
+function truncateText(value, maxLength = 220) {
+  const normalizedValue = normalizeText(value);
+
+  if (normalizedValue.length <= maxLength) {
+    return normalizedValue;
+  }
+
+  return `${normalizedValue.slice(0, maxLength - 3)}...`;
+}
+
+function limitMessageLength(value, maxLength = 900) {
+  const normalizedValue = normalizeText(value);
+
+  if (normalizedValue.length <= maxLength) {
+    return normalizedValue;
+  }
+
+  return `${normalizedValue.slice(0, maxLength - 3)}...`;
+}
+
+function getManagerNotificationPhone() {
+  return normalizePhoneNumber(config.adminNotificationNumber, config.defaultCountryCode);
+}
+
+function parseManagerAction(input) {
+  const normalizedInput = normalizeText(input);
+  const match = /^(manager_approve|manager_reject):([a-z0-9-]+)$/i.exec(normalizedInput);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    action: match[1].toLowerCase(),
+    requestId: match[2]
+  };
+}
+
+function getManagerDecisionDetails(action) {
+  if (action === MANAGER_APPROVE_ACTION) {
+    return {
+      status: 'approved',
+      statusLabel: 'aprobada',
+      confirmationLabel: 'Aprobada'
+    };
+  }
+
+  return {
+    status: 'denied',
+    statusLabel: 'denegada',
+    confirmationLabel: 'Denegada'
+  };
+}
+
 function buildRequestSummary(session) {
   const employee = session.employee;
   const request = session.request;
@@ -416,6 +481,45 @@ function buildRequestSummary(session) {
   lines.push(`Motivo: ${request.reason || 'Pendiente'}`);
   lines.push(`Certificado medico: ${certificateStatus}`);
   return lines.join('\n');
+}
+
+function buildManagerRequestSummary(requestRecord) {
+  const employee = requestRecord?.employee || {};
+  const request = requestRecord?.request || {};
+  const requestType = getRequestTypeOption(request);
+  const timeUnit = getTimeUnitOption(request);
+  const permissionType = getPermissionTypeOption(request);
+  const certificateStatus = request.certMedMediaId
+    ? `Adjuntado${request.certMedFilename ? `: ${request.certMedFilename}` : ''}`
+    : 'No adjuntado';
+  const lines = [
+    'Nueva solicitud para revision',
+    '',
+    `Caso: ${requestRecord?.app_uid || 'Pendiente'}`,
+    `Solicitud: ${requestRecord?.local_request_id || request.request_id || 'Sin id'}`,
+    `Empleado: ${getEmployeeFullName(employee)}`,
+    `Telefono: ${requestRecord?.phone || ''}`,
+    `Correo: ${employee.email || ''}`,
+    `Tipo de solicitud: ${request.typeRequestLabel || requestType.label}`,
+    `Unidad de tiempo: ${request.timeUnitLabel || timeUnit.label}`,
+    `Tipo de permiso: ${isVacationRequest(request) ? 'No aplica' : (request.typePermissionLabel || permissionType?.label || 'Pendiente')}`
+  ];
+
+  if (isHoursRequest(request)) {
+    lines.push(`Fecha: ${request.startDate || 'Pendiente'}`);
+    lines.push(`Horario: ${request.startTime && request.endTime ? `${request.startTime} - ${request.endTime}` : 'Pendiente'}`);
+  } else {
+    lines.push(`Fecha inicio: ${request.startDate || 'Pendiente'}`);
+    lines.push(`Fecha fin: ${request.endDate || 'Pendiente'}`);
+  }
+
+  lines.push(`${buildRequestedAmountLabel(request)}: ${formatRequestedAmount(request)}`);
+  lines.push(`Motivo: ${truncateText(request.reason, 240) || 'Pendiente'}`);
+  lines.push(`Certificado medico: ${certificateStatus}`);
+  lines.push('');
+  lines.push('Selecciona una opcion para registrar tu decision.');
+
+  return limitMessageLength(lines.filter((line) => line !== '').join('\n').replace(/\n{3,}/g, '\n\n'));
 }
 
 function buildCreateCasePayload(employee, request) {
@@ -956,6 +1060,210 @@ async function attachCertificateIfNeeded(session, appUid) {
   }
 }
 
+async function notifyEmployeeAboutManagerDecision(requestRecord, decision) {
+  const employeePhone = normalizePhoneNumber(requestRecord?.phone, config.defaultCountryCode);
+
+  if (!employeePhone) {
+    return {
+      sent: false,
+      skipped: true,
+      reason: 'employee_phone_missing'
+    };
+  }
+
+  const lines = [
+    `Hola ${getEmployeeDisplayName(requestRecord?.employee)}.`,
+    `Tu solicitud fue ${decision.statusLabel} por tu jefe.`
+  ];
+
+  if (requestRecord?.app_uid) {
+    lines.push(`Caso: ${requestRecord.app_uid}`);
+  }
+
+  lines.push(`Solicitud: ${requestRecord?.local_request_id || requestRecord?.request?.request_id || 'Sin id'}`);
+
+  await sendTextMessage(employeePhone, lines.join('\n'));
+
+  return {
+    sent: true,
+    to: employeePhone
+  };
+}
+
+async function notifyManagerAboutRequest(requestRecord) {
+  const managerPhone = getManagerNotificationPhone();
+  const requestId = requestRecord?.local_request_id || requestRecord?.request?.request_id || '';
+  const notifiedAt = new Date().toISOString();
+
+  if (!requestId) {
+    return {
+      sent: false,
+      skipped: true,
+      reason: 'request_id_missing'
+    };
+  }
+
+  if (!managerPhone) {
+    const notificationError = {
+      message: 'ADMIN_NOTIFICATION_NUMBER is not configured'
+    };
+
+    updateRequest(requestId, (current) => ({
+      ...current,
+      manager_review: {
+        ...(current.manager_review || {}),
+        notification_status: 'skipped',
+        notified_at: notifiedAt,
+        notified_to: '',
+        notification_error: notificationError
+      }
+    }));
+
+    console.warn('[MANAGER_NOTIFY] ADMIN_NOTIFICATION_NUMBER no configurado');
+
+    return {
+      sent: false,
+      skipped: true,
+      error: notificationError
+    };
+  }
+
+  try {
+    await sendButtonsMessage(
+      managerPhone,
+      buildManagerRequestSummary(requestRecord),
+      [
+        { id: `${MANAGER_APPROVE_ACTION}:${requestId}`, title: 'Aprobar' },
+        { id: `${MANAGER_REJECT_ACTION}:${requestId}`, title: 'Denegar' }
+      ]
+    );
+
+    updateRequest(requestId, (current) => ({
+      ...current,
+      manager_review: {
+        ...(current.manager_review || {}),
+        notification_status: 'sent',
+        notified_at: notifiedAt,
+        notified_to: managerPhone,
+        notification_error: null
+      }
+    }));
+
+    console.log('[MANAGER_NOTIFY] Resumen enviado al jefe:', {
+      requestId,
+      managerPhone
+    });
+
+    return {
+      sent: true,
+      to: managerPhone
+    };
+  } catch (error) {
+    const detail = describeHttpError(error);
+
+    updateRequest(requestId, (current) => ({
+      ...current,
+      manager_review: {
+        ...(current.manager_review || {}),
+        notification_status: 'error',
+        notified_at: notifiedAt,
+        notified_to: managerPhone,
+        notification_error: detail
+      }
+    }));
+
+    console.error('[MANAGER_NOTIFY] Error enviando resumen al jefe:', detail);
+
+    return {
+      sent: false,
+      to: managerPhone,
+      error: detail
+    };
+  }
+}
+
+async function handleManagerDecision(from, messageId, input) {
+  const managerAction = parseManagerAction(input);
+
+  if (!managerAction) {
+    return false;
+  }
+
+  const managerPhone = getManagerNotificationPhone();
+
+  if (!managerPhone) {
+    await sendTextMessage(from, 'La aprobacion por WhatsApp no esta configurada en este momento.');
+    return true;
+  }
+
+  if (!phoneNumbersMatch(from, managerPhone, config.defaultCountryCode)) {
+    console.warn('[MANAGER_REVIEW] Numero sin permisos para revisar solicitud:', {
+      from,
+      requestId: managerAction.requestId
+    });
+    await sendTextMessage(from, 'Este numero no tiene permisos para responder esta solicitud.');
+    return true;
+  }
+
+  const requestRecord = getRequest(managerAction.requestId);
+
+  if (!requestRecord) {
+    await sendTextMessage(from, 'No encontre la solicitud asociada a este boton.');
+    return true;
+  }
+
+  const currentStatus = normalizeText(requestRecord?.manager_review?.status).toLowerCase();
+
+  if (currentStatus && currentStatus !== 'pending') {
+    const existingDecision = getManagerDecisionDetails(
+      currentStatus === 'approved' ? MANAGER_APPROVE_ACTION : MANAGER_REJECT_ACTION
+    );
+    await sendTextMessage(
+      from,
+      `Esta solicitud ya fue ${existingDecision.statusLabel}. No puedo cambiar la decision desde este boton.`
+    );
+    return true;
+  }
+
+  const decision = getManagerDecisionDetails(managerAction.action);
+  const decisionAt = new Date().toISOString();
+  const updatedRecord = updateRequest(managerAction.requestId, (current) => ({
+    ...current,
+    manager_review: {
+      ...(current.manager_review || {}),
+      status: decision.status,
+      decision: decision.confirmationLabel,
+      decision_at: decisionAt,
+      decided_by: normalizePhoneNumber(from, config.defaultCountryCode),
+      decision_message_id: messageId || ''
+    }
+  }));
+
+  if (!updatedRecord) {
+    await sendTextMessage(from, 'No pude registrar la decision para esta solicitud.');
+    return true;
+  }
+
+  const confirmationLines = [
+    `${decision.confirmationLabel} registrada correctamente.`,
+    `Solicitud: ${updatedRecord.local_request_id || managerAction.requestId}`
+  ];
+
+  if (updatedRecord.app_uid) {
+    confirmationLines.push(`Caso: ${updatedRecord.app_uid}`);
+  }
+
+  await sendTextMessage(from, confirmationLines.join('\n'));
+
+  try {
+    await notifyEmployeeAboutManagerDecision(updatedRecord, decision);
+  } catch (error) {
+    console.error('[MANAGER_REVIEW] Error notificando al colaborador:', describeHttpError(error));
+  }
+
+  return true;
+}
+
 async function resetConversationToMenu(phone, employee = null, introText = '', lastProcessedMessageId = '') {
   if (employee?.userName) {
     await persistEmployeeProfile(phone, employee);
@@ -1130,6 +1438,10 @@ async function processMessage(message) {
   const messageId = normalizeText(message.messageId);
 
   if (!from) return;
+
+  if (await handleManagerDecision(from, messageId, input)) {
+    return;
+  }
 
   let session = getSession(from);
 
@@ -1516,7 +1828,26 @@ async function processMessage(message) {
             lurana_payload: payload,
             lurana_response: apiResponse,
             cert_med_result: certificateResult,
-            cert_med_error: attachmentError
+            cert_med_error: attachmentError,
+            manager_review: {
+              status: 'pending',
+              decision: '',
+              decision_at: '',
+              decided_by: '',
+              decision_message_id: '',
+              notification_status: 'pending',
+              notified_at: '',
+              notified_to: getManagerNotificationPhone(),
+              notification_error: null
+            }
+          });
+
+          const managerNotification = await notifyManagerAboutRequest({
+            local_request_id: requestSnapshot.request_id,
+            phone: from,
+            app_uid: appUid || null,
+            employee: session.employee,
+            request: requestSnapshot
           });
 
           await persistEmployeeProfile(from, session.employee);
@@ -1538,6 +1869,12 @@ async function processMessage(message) {
           if (attachmentError) {
             confirmationLines.push('');
             confirmationLines.push(`Aviso: ${buildAttachmentWarning(attachmentError)}`);
+          }
+
+          if (managerNotification.sent) {
+            confirmationLines.push('Resumen enviado al jefe para revision.');
+          } else {
+            confirmationLines.push('Aviso: no pude enviar la notificacion al jefe.');
           }
 
           resetRequestState(session);

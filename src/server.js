@@ -3,7 +3,11 @@ const path = require('path');
 const axios = require('axios');
 const express = require('express');
 const config = require('./config');
-const { ensureDirectories } = require('./storage');
+const {
+  ensureDirectories,
+  getRequest,
+  findRequestByAppUid
+} = require('./storage');
 const { processMessage } = require('./bot');
 const {
   getUserData,
@@ -225,6 +229,104 @@ function buildEmptyPayload(label) {
   };
 }
 
+function getManagerDecisionCode(status) {
+  const normalizedStatus = String(status || '').trim().toLowerCase();
+
+  if (normalizedStatus === 'approved') {
+    return 1;
+  }
+
+  if (normalizedStatus === 'denied') {
+    return 0;
+  }
+
+  return null;
+}
+
+function buildManagerReviewSummary(requestRecord) {
+  if (!requestRecord) {
+    return null;
+  }
+
+  const review = requestRecord.manager_review || {};
+  const employee = requestRecord.employee || {};
+  const request = requestRecord.request || {};
+  const decisionCode = getManagerDecisionCode(review.status);
+
+  return {
+    local_request_id: requestRecord.local_request_id || request.request_id || null,
+    app_uid: requestRecord.app_uid || null,
+    employee: {
+      username: employee.userName || null,
+      first_name: employee.firstName || null,
+      last_name: employee.lastName || null,
+      email: employee.email || null,
+      phone: requestRecord.phone || null
+    },
+    request: {
+      type_request_code: request.typeRequestCode ?? null,
+      type_request_label: request.typeRequestLabel || null,
+      time_unit_code: request.timeUnitCode ?? null,
+      time_unit_label: request.timeUnitLabel || null,
+      type_permission_code: request.typePermissionCode ?? null,
+      type_permission_label: request.typePermissionLabel || null,
+      start_date: request.startDate || null,
+      end_date: request.endDate || null,
+      start_time: request.startTime || null,
+      end_time: request.endTime || null,
+      requested_amount: request.requestedDays ?? 0,
+      reason: request.reason || null,
+      cert_med_attached: Boolean(request.certMedMediaId)
+    },
+    manager_review: {
+      status: review.status || 'pending',
+      decision: review.decision || null,
+      decision_code: decisionCode,
+      decision_at: review.decision_at || null,
+      decided_by: review.decided_by || null,
+      notification_status: review.notification_status || null,
+      notified_at: review.notified_at || null,
+      notified_to: review.notified_to || null
+    }
+  };
+}
+
+function buildProcessMakerDecisionPayload(requestRecord) {
+  const summary = buildManagerReviewSummary(requestRecord);
+
+  if (!summary) {
+    return null;
+  }
+
+  return {
+    local_request_id: summary.local_request_id,
+    app_uid: summary.app_uid,
+    manager_review_status: summary.manager_review.status,
+    manager_review_decision: summary.manager_review.decision,
+    manager_review_decision_code: summary.manager_review.decision_code,
+    manager_review_decision_at: summary.manager_review.decision_at,
+    manager_review_decided_by: summary.manager_review.decided_by,
+    processmaker_variables_example: {
+      managerDecision: summary.manager_review.decision_code,
+      managerDecisionLabel: summary.manager_review.decision,
+      managerDecisionAt: summary.manager_review.decision_at,
+      managerDecisionBy: summary.manager_review.decided_by
+    }
+  };
+}
+
+function resolveRequestRecord({ requestId, appUid }) {
+  if (requestId) {
+    return getRequest(requestId);
+  }
+
+  if (appUid) {
+    return findRequestByAppUid(appUid);
+  }
+
+  return null;
+}
+
 function extractCasesArray(payload) {
   if (Array.isArray(payload)) {
     return payload;
@@ -300,6 +402,78 @@ app.get('/webhook', (req, res) => {
   }
 
   return res.sendStatus(403);
+});
+
+app.get('/manager-review/request/:requestId', (req, res) => {
+  const requestRecord = resolveRequestRecord({ requestId: req.params.requestId });
+
+  if (!requestRecord) {
+    return res.status(404).json({
+      error: {
+        message: 'Request not found'
+      }
+    });
+  }
+
+  return res.json({
+    ok: true,
+    source: 'request_id',
+    data: buildManagerReviewSummary(requestRecord)
+  });
+});
+
+app.get('/manager-review/case/:appUid', (req, res) => {
+  const requestRecord = resolveRequestRecord({ appUid: req.params.appUid });
+
+  if (!requestRecord) {
+    return res.status(404).json({
+      error: {
+        message: 'Request not found for app_uid'
+      }
+    });
+  }
+
+  return res.json({
+    ok: true,
+    source: 'app_uid',
+    data: buildManagerReviewSummary(requestRecord)
+  });
+});
+
+app.get('/manager-review/request/:requestId/processmaker-payload', (req, res) => {
+  const requestRecord = resolveRequestRecord({ requestId: req.params.requestId });
+
+  if (!requestRecord) {
+    return res.status(404).json({
+      error: {
+        message: 'Request not found'
+      }
+    });
+  }
+
+  return res.json({
+    ok: true,
+    source: 'request_id',
+    data: buildProcessMakerDecisionPayload(requestRecord)
+  });
+});
+
+app.get('/manager-review/case/:appUid/processmaker-payload', (req, res) => {
+  const requestRecord = resolveRequestRecord({ appUid: req.params.appUid });
+
+  if (!requestRecord) {
+    return res.status(404).json({
+      error: {
+        message: 'Request not found for app_uid'
+      }
+    });
+  }
+
+  return res.json({
+    ok: true,
+    source: 'app_uid',
+    data: buildProcessMakerDecisionPayload(requestRecord)
+  });
 });
 
 app.get('/test-lurana-user/:username', async (req, res) => {

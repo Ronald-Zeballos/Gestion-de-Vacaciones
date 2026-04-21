@@ -35,6 +35,36 @@ function normalizeText(value) {
   return String(value || '').trim();
 }
 
+function getDigitsOnly(value) {
+  return normalizeText(value).replace(/\D/g, '');
+}
+
+function normalizePhoneNumber(value, defaultCountryCode = '') {
+  const digits = getDigitsOnly(value);
+  const countryCode = getDigitsOnly(defaultCountryCode);
+
+  if (!digits) {
+    return '';
+  }
+
+  if (!countryCode || digits.startsWith(countryCode)) {
+    return digits;
+  }
+
+  return `${countryCode}${digits}`;
+}
+
+function phoneNumbersMatch(left, right, defaultCountryCode = '') {
+  const normalizedLeft = normalizePhoneNumber(left, defaultCountryCode);
+  const normalizedRight = normalizePhoneNumber(right, defaultCountryCode);
+
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+
+  return normalizedLeft === normalizedRight;
+}
+
 function todayDate() {
   return dayjs().format(DATE_FORMAT);
 }
@@ -414,6 +444,9 @@ module.exports = {
   DATETIME_FORMAT,
   TIME_FORMAT,
   normalizeText,
+  getDigitsOnly,
+  normalizePhoneNumber,
+  phoneNumbersMatch,
   todayDate,
   parseDate,
   parseDateTime,
