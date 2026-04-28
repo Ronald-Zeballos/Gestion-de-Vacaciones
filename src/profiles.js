@@ -44,6 +44,7 @@ function saveProfile(phone, profile) {
     firstName: profile.firstName || '',
     lastName: profile.lastName || '',
     email: profile.email || '',
+    phone: profile.phone || '',
     updatedAt: new Date().toISOString()
   };
   writeProfiles(profiles);

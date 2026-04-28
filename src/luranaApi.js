@@ -9,6 +9,11 @@ const {
   setLastCreateCase,
   setLastCasesQuery
 } = require('./debugStore');
+const {
+  getDigitsOnly,
+  normalizePhoneNumber,
+  normalizeText
+} = require('./utils');
 
 function apiBase() {
   if (!config.luranaApiBaseUrl || !config.luranaWorkspace) {
@@ -95,6 +100,123 @@ async function getUserData(username) {
 
     throw error;
   }
+}
+
+function buildPhoneLookupTemplates() {
+  return String(config.luranaPhoneLookupPaths || '')
+    .split(',')
+    .map((item) => normalizeText(item))
+    .filter(Boolean);
+}
+
+function buildPhoneLookupCandidates(phone) {
+  const rawPhone = normalizeText(phone);
+  const digitsOnly = getDigitsOnly(rawPhone);
+  const normalizedPhone = normalizePhoneNumber(rawPhone, config.defaultCountryCode);
+  const countryCode = getDigitsOnly(config.defaultCountryCode);
+  const localPhone =
+    normalizedPhone.startsWith(countryCode) && normalizedPhone.length > countryCode.length
+      ? normalizedPhone.slice(countryCode.length)
+      : '';
+
+  return [...new Set([
+    normalizedPhone,
+    digitsOnly,
+    localPhone,
+    normalizedPhone ? `+${normalizedPhone}` : '',
+    rawPhone
+  ].map((item) => normalizeText(item)).filter(Boolean))];
+}
+
+function buildLookupPath(template, phoneCandidate, rawPhone) {
+  const normalizedTemplate = normalizeText(template).replace(/^\/+/, '');
+
+  if (!normalizedTemplate) {
+    return '';
+  }
+
+  if (!normalizedTemplate.includes('{')) {
+    return `${normalizedTemplate.replace(/\/+$/, '')}/${encodeURIComponent(phoneCandidate)}`;
+  }
+
+  return normalizedTemplate
+    .replace(/\{phone\}/gi, encodeURIComponent(phoneCandidate))
+    .replace(/\{normalizedPhone\}/gi, encodeURIComponent(phoneCandidate))
+    .replace(/\{rawPhone\}/gi, encodeURIComponent(rawPhone));
+}
+
+function isPhoneLookupMiss(error) {
+  const status = Number(error?.response?.status || 0);
+  return status === 400 || status === 404 || status === 422;
+}
+
+async function getUserDataByPhone(phone) {
+  const rawPhone = normalizeText(phone);
+  const lookupTemplates = buildPhoneLookupTemplates();
+  const phoneCandidates = buildPhoneLookupCandidates(rawPhone);
+  let lastLookupError = null;
+
+  if (!rawPhone || !lookupTemplates.length || !phoneCandidates.length) {
+    setLastUserLookup({
+      lookupType: 'phone',
+      phone: rawPhone,
+      response: null,
+      error: 'Phone lookup is not configured or the phone is empty'
+    });
+
+    return null;
+  }
+
+  for (const template of lookupTemplates) {
+    for (const phoneCandidate of phoneCandidates) {
+      const requestPath = buildLookupPath(template, phoneCandidate, rawPhone);
+      const url = `${apiBase()}/${requestPath}`;
+
+      try {
+        const response = await axios.get(url, {
+          headers: await authHeaders({ 'Content-Type': 'application/json' }),
+          timeout: 15000,
+          maxRedirects: 0
+        });
+
+        setLastUserLookup({
+          lookupType: 'phone',
+          phone: rawPhone,
+          normalizedPhone: phoneCandidate,
+          requestPath,
+          response: response.data,
+          error: null
+        });
+
+        return response.data;
+      } catch (error) {
+        if (isPhoneLookupMiss(error)) {
+          lastLookupError = error;
+          continue;
+        }
+
+        setLastUserLookup({
+          lookupType: 'phone',
+          phone: rawPhone,
+          normalizedPhone: phoneCandidate,
+          requestPath,
+          response: null,
+          error: getDebugErrorValue(error)
+        });
+
+        throw error;
+      }
+    }
+  }
+
+  setLastUserLookup({
+    lookupType: 'phone',
+    phone: rawPhone,
+    response: null,
+    error: lastLookupError ? getDebugErrorValue(lastLookupError) : 'No user found for phone'
+  });
+
+  return null;
 }
 
 async function createPtoCase(payload) {
@@ -232,6 +354,7 @@ async function uploadInputDocument(appUid, inpDocUid, tasUid, filePath, comment 
 
 module.exports = {
   getUserData,
+  getUserDataByPhone,
   createPtoCase,
   listRecentCases,
   uploadInputDocument,

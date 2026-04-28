@@ -11,6 +11,7 @@ const {
 const { processMessage } = require('./bot');
 const {
   getUserData,
+  getUserDataByPhone,
   createPtoCase,
   listRecentCases,
   uploadInputDocument,
@@ -213,8 +214,10 @@ function buildDebugEnvPayload() {
     LURANA_PRO_UID: config.luranaProUid,
     LURANA_TAS_UID: config.luranaTasUid,
     LURANA_CERT_INP_DOC_UID: config.luranaCertInpDocUid,
+    LURANA_PHONE_LOOKUP_PATHS: config.luranaPhoneLookupPaths,
     LURANA_TOKEN_URL: config.luranaTokenUrl,
     WHATSAPP_PHONE_NUMBER_ID: config.phoneNumberId,
+    MANAGER_NOTIFICATION_NUMBER: maskValue(config.managerNotificationNumber),
     LURANA_CLIENT_ID: maskValue(config.luranaClientId),
     LURANA_CLIENT_SECRET: maskValue(config.luranaClientSecret),
     LURANA_USER: config.luranaUser,
@@ -486,6 +489,29 @@ app.get('/test-lurana-user/:username', async (req, res) => {
   } catch (error) {
     console.error('[TEST][LURANA_USER] Error:', describeHttpError(error));
     res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
+  }
+});
+
+app.get('/test-lurana-phone/:phone', async (req, res) => {
+  try {
+    const data = await getUserDataByPhone(req.params.phone);
+
+    if (!data) {
+      return res.status(404).json({
+        ok: false,
+        error: {
+          message: 'No se encontro un usuario para ese numero'
+        }
+      });
+    }
+
+    return res.json({
+      ok: true,
+      data
+    });
+  } catch (error) {
+    console.error('[TEST][LURANA_PHONE] Error:', describeHttpError(error));
+    return res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
   }
 });
 

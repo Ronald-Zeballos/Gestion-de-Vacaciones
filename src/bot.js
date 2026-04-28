@@ -44,6 +44,7 @@ const {
 } = require('./utils');
 const {
   getUserData,
+  getUserDataByPhone,
   createPtoCase,
   uploadInputDocument,
   extractAppUid
@@ -69,6 +70,15 @@ const DENIED_CERT_EXTENSIONS = ['.exe', '.bat', '.sh', '.cmd', '.com', '.pif', '
 const DENIED_CERT_MIMETYPES = ['application/x-msdownload', 'application/x-msdos-program', 'application/x-executable', 'application/x-elf'];
 const MANAGER_APPROVE_ACTION = 'manager_approve';
 const MANAGER_REJECT_ACTION = 'manager_reject';
+const EMPLOYEE_PHONE_KEY_TOKENS = [
+  'phone',
+  'mobile',
+  'cell',
+  'telefono',
+  'telephone',
+  'celular',
+  'whatsapp'
+];
 
 function isValidCertificateFile(mimeType, filename) {
   // Si no hay ni mimeType ni filename, rechazar
@@ -201,18 +211,183 @@ function getUserInput(message) {
 
 function parseApiUser(data) {
   if (!data) return null;
+  if (Array.isArray(data)) return data[0] || null;
+  if (Array.isArray(data.user)) return data.user[0] || null;
   if (data.user) return data.user;
+  if (Array.isArray(data.data)) return data.data[0] || null;
   if (data.data) return data.data;
   return data;
 }
 
-function hydrateEmployee(rawEmployee, username) {
-  if (!rawEmployee) return null;
+function normalizeLookupKey(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function collectEmployeePhoneCandidates(value, depth = 0, found = []) {
+  if (!value || depth > 4) {
+    return found;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectEmployeePhoneCandidates(item, depth + 1, found);
+    }
+
+    return found;
+  }
+
+  if (typeof value !== 'object') {
+    return found;
+  }
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = normalizeLookupKey(key);
+    const isPhoneLikeKey = EMPLOYEE_PHONE_KEY_TOKENS.some((token) => normalizedKey.includes(token));
+
+    if (
+      isPhoneLikeKey &&
+      (typeof nestedValue === 'string' || typeof nestedValue === 'number')
+    ) {
+      found.push(String(nestedValue));
+    }
+
+    collectEmployeePhoneCandidates(nestedValue, depth + 1, found);
+  }
+
+  return found;
+}
+
+function resolveEmployeePhoneCandidates(rawEmployee) {
+  const candidates = collectEmployeePhoneCandidates(rawEmployee);
+  const normalizedCandidates = [];
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizePhoneNumber(candidate, config.defaultCountryCode);
+
+    if (normalizedCandidate) {
+      normalizedCandidates.push(normalizedCandidate);
+    }
+  }
+
+  return [...new Set(normalizedCandidates)];
+}
+
+function resolveEmployeePhone(rawEmployee) {
+  const employeePhoneCandidates = resolveEmployeePhoneCandidates(rawEmployee);
+  return employeePhoneCandidates[0] || '';
+}
+
+function resolveEmployeeUserName(rawEmployee, requestedUsername = '') {
+  return (
+    normalizeText(requestedUsername) ||
+    normalizeText(rawEmployee?.userName) ||
+    normalizeText(rawEmployee?.username) ||
+    normalizeText(rawEmployee?.usr_username) ||
+    normalizeText(rawEmployee?.var_user_name) ||
+    normalizeText(rawEmployee?.user) ||
+    ''
+  );
+}
+
+function resolveEmployeeUserId(rawEmployee) {
+  return (
+    normalizeText(rawEmployee?.userId) ||
+    normalizeText(rawEmployee?.id) ||
+    normalizeText(rawEmployee?.user_id) ||
+    normalizeText(rawEmployee?.usr_uid) ||
+    ''
+  );
+}
+
+function hasEmployeeIdentity(employee) {
+  if (!employee || typeof employee !== 'object') {
+    return false;
+  }
+
+  return Boolean(
+    normalizeText(employee.userName) ||
+    normalizeText(employee.firstName) ||
+    normalizeText(employee.lastName) ||
+    normalizeText(employee.email) ||
+    normalizeText(employee.phone) ||
+    normalizeText(employee.userId)
+  );
+}
+
+function hydrateEmployee(rawEmployee, username, sourcePhone = '') {
+  if (!rawEmployee || typeof rawEmployee !== 'object') return null;
+
+  const hydratedEmployee = {
+    ...rawEmployee,
+    userName: resolveEmployeeUserName(rawEmployee, username),
+    userId: resolveEmployeeUserId(rawEmployee),
+    phone: resolveEmployeePhone(rawEmployee),
+    phoneCandidates: resolveEmployeePhoneCandidates(rawEmployee)
+  };
+
+  return hasEmployeeIdentity(hydratedEmployee) ? hydratedEmployee : null;
+}
+
+function validateCorporateUsername(username) {
+  const normalizedUsername = normalizeText(username);
+
+  if (!normalizedUsername) {
+    return 'Debes escribir tu username';
+  }
+
+  if (/\s/.test(normalizedUsername)) {
+    return 'El username no debe tener espacios';
+  }
+
+  if (normalizedUsername.length < 2) {
+    return 'El username es demasiado corto';
+  }
+
+  if (normalizedUsername.length > 80) {
+    return 'El username es demasiado largo';
+  }
+
+  return '';
+}
+
+function maskPhoneNumber(phone) {
+  const normalizedPhone = normalizePhoneNumber(phone, config.defaultCountryCode);
+
+  if (!normalizedPhone) {
+    return '';
+  }
+
+  if (normalizedPhone.length <= 4) {
+    return normalizedPhone;
+  }
+
+  return `${'*'.repeat(normalizedPhone.length - 4)}${normalizedPhone.slice(-4)}`;
+}
+
+function validateEmployeePhoneOwnership(employee, phone) {
+  const employeePhones = [
+    ...(Array.isArray(employee?.phoneCandidates) ? employee.phoneCandidates : []),
+    normalizePhoneNumber(employee?.phone, config.defaultCountryCode)
+  ].filter(Boolean);
+  const uniqueEmployeePhones = [...new Set(employeePhones)];
+  const employeePhone = uniqueEmployeePhones[0] || '';
+
+  if (!uniqueEmployeePhones.length) {
+    return {
+      ok: true,
+      reason: 'employee_phone_missing',
+      employeePhone: ''
+    };
+  }
+
+  const matches = uniqueEmployeePhones.some((candidatePhone) =>
+    phoneNumbersMatch(phone, candidatePhone, config.defaultCountryCode)
+  );
 
   return {
-    ...rawEmployee,
-    userName: normalizeText(username) || normalizeText(rawEmployee.userName),
-    userId: rawEmployee.userId || rawEmployee.id || ''
+    ok: matches,
+    reason: matches ? 'matched' : 'phone_mismatch',
+    employeePhone
   };
 }
 
@@ -383,7 +558,8 @@ function employeeSummary(employee) {
   return [
     `Empleado: ${(employee.firstName || employee.userName || '').trim()} ${(employee.lastName || '').trim()}`.trim(),
     `Correo: ${employee.email || ''}`,
-    `Username: ${employee.userName || ''}`
+    `Username: ${employee.userName || ''}`,
+    employee.phone ? `Telefono registrado: ${employee.phone}` : ''
   ].filter(Boolean).join('\n');
 }
 
@@ -417,7 +593,7 @@ function limitMessageLength(value, maxLength = 900) {
 }
 
 function getManagerNotificationPhone() {
-  return normalizePhoneNumber(config.adminNotificationNumber, config.defaultCountryCode);
+  return normalizePhoneNumber(config.managerNotificationNumber, config.defaultCountryCode);
 }
 
 function parseManagerAction(input) {
@@ -625,13 +801,22 @@ function buildProfilePayload(employee) {
     username: employee.userName || '',
     firstName: employee.firstName || '',
     lastName: employee.lastName || '',
-    email: employee.email || ''
+    email: employee.email || '',
+    phone: employee.phone || ''
   };
 }
 
 async function persistEmployeeProfile(phone, employee) {
   if (!employee?.userName) return;
   saveProfile(phone, buildProfilePayload(employee));
+}
+
+async function createSessionForEmployee(phone, employee, lastProcessedMessageId = '') {
+  const session = buildInitialSession(phone, lastProcessedMessageId);
+  session.employee = employee;
+  saveSession(phone, session);
+  await persistEmployeeProfile(phone, employee);
+  return session;
 }
 
 async function deleteTempFile(filePath) {
@@ -1105,7 +1290,7 @@ async function notifyManagerAboutRequest(requestRecord) {
 
   if (!managerPhone) {
     const notificationError = {
-      message: 'ADMIN_NOTIFICATION_NUMBER is not configured'
+      message: 'MANAGER_NOTIFICATION_NUMBER or ADMIN_NOTIFICATION_NUMBER is not configured'
     };
 
     updateRequest(requestId, (current) => ({
@@ -1119,7 +1304,7 @@ async function notifyManagerAboutRequest(requestRecord) {
       }
     }));
 
-    console.warn('[MANAGER_NOTIFY] ADMIN_NOTIFICATION_NUMBER no configurado');
+    console.warn('[MANAGER_NOTIFY] Numero del jefe no configurado');
 
     return {
       sent: false,
@@ -1297,19 +1482,54 @@ async function restoreSessionFromProfile(phone, lastProcessedMessageId = '') {
   }
 
   const apiResponse = await getUserData(profile.username);
-  const employee = hydrateEmployee(parseApiUser(apiResponse), profile.username);
+  const employee = hydrateEmployee(parseApiUser(apiResponse), profile.username, phone);
 
   if (!employee) {
     throw new Error('No se pudo reconstruir el perfil guardado');
   }
 
-  const session = buildInitialSession(phone, lastProcessedMessageId);
-  session.employee = employee;
-  saveSession(phone, session);
-  await persistEmployeeProfile(phone, employee);
+  const phoneValidation = validateEmployeePhoneOwnership(employee, phone);
+
+  if (!phoneValidation.ok) {
+    clearProfile(phone);
+    console.warn('[PROFILE] Perfil guardado descartado por numero distinto al registrado en Lurana:', {
+      phone,
+      username: profile.username,
+      employeePhone: phoneValidation.employeePhone
+    });
+    return null;
+  }
+
+  const session = await createSessionForEmployee(phone, employee, lastProcessedMessageId);
 
   return {
     profile,
+    session
+  };
+}
+
+async function restoreSessionFromRegisteredPhone(phone, lastProcessedMessageId = '') {
+  const apiResponse = await getUserDataByPhone(phone);
+  const employee = hydrateEmployee(parseApiUser(apiResponse), '', phone);
+
+  if (!employee) {
+    return null;
+  }
+
+  const phoneValidation = validateEmployeePhoneOwnership(employee, phone);
+
+  if (!phoneValidation.ok) {
+    console.warn('[PHONE_LOOKUP] El numero consultado no coincide con el numero del colaborador:', {
+      phone,
+      employeePhone: phoneValidation.employeePhone,
+      username: employee.userName || ''
+    });
+    return null;
+  }
+
+  const session = await createSessionForEmployee(phone, employee, lastProcessedMessageId);
+
+  return {
     session
   };
 }
@@ -1501,6 +1721,21 @@ async function processMessage(message) {
         console.error('[PROFILE] Error restaurando perfil:', describeHttpError(error));
       }
 
+      try {
+        const restoredByPhone = await restoreSessionFromRegisteredPhone(from, messageId);
+
+        if (restoredByPhone?.session) {
+          await sendMainMenu(
+            from,
+            restoredByPhone.session,
+            `Hola ${getEmployeeDisplayName(restoredByPhone.session.employee)}. Te reconoci por tu numero registrado en Lurana.`
+          );
+          return;
+        }
+      } catch (error) {
+        console.error('[PHONE_LOOKUP] Error restaurando por numero:', describeHttpError(error));
+      }
+
       session = buildInitialSession(from, messageId);
       saveSession(from, session);
       await sendMainMenu(from, session);
@@ -1536,44 +1771,74 @@ async function processMessage(message) {
           return;
         }
 
+        try {
+          const restoredByPhone = await restoreSessionFromRegisteredPhone(from, messageId);
+
+          if (restoredByPhone?.session) {
+            await sendRequestTypePrompt(
+              from,
+              restoredByPhone.session,
+              `Hola ${getEmployeeDisplayName(restoredByPhone.session.employee)}. Te reconoci por tu numero registrado en Lurana.`
+            );
+            return;
+          }
+        } catch (error) {
+          console.error('[PHONE_LOOKUP] Error identificando al colaborador por numero:', describeHttpError(error));
+        }
+
         session.step = STEPS.USERNAME;
         saveSession(from, session);
         await sendTextMessage(from, 'Escribe tu username corporativo');
         return;
 
       case STEPS.USERNAME:
-        if (!plainText) {
-          await sendTextMessage(from, 'Debes escribir tu username');
-          return;
-        }
+        {
+          const usernameValidationError = validateCorporateUsername(plainText);
 
-        try {
-          const apiResponse = await getUserData(plainText);
-          const employee = hydrateEmployee(parseApiUser(apiResponse), plainText);
-
-          if (!employee) {
-            await sendTextMessage(from, 'No encontre un usuario con ese username. Intenta nuevamente');
+          if (usernameValidationError) {
+            await sendTextMessage(from, usernameValidationError);
             return;
           }
 
-          session.employee = employee;
-          session.step = STEPS.CONFIRM_PROFILE;
-          session.lastCreateError = null;
-          saveSession(from, session);
+          try {
+            const apiResponse = await getUserData(plainText);
+            const employee = hydrateEmployee(parseApiUser(apiResponse), plainText, from);
 
-          await sendButtonsMessage(
-            from,
-            `Encontre estos datos:\n\n${employeeSummary(employee)}\n\nSon correctos?`,
-            [
-              { id: 'profile_ok', title: 'Si' },
-              { id: 'profile_retry', title: 'No' }
-            ]
-          );
-        } catch (error) {
-          console.error('[BOT][GET_USER] Error consultando getUserData:', describeHttpError(error));
-          await sendTextMessage(from, 'No pude consultar tus datos en este momento');
+            if (!employee) {
+              await sendTextMessage(from, 'No encontre un usuario con ese username. Intenta nuevamente');
+              return;
+            }
+
+            const phoneValidation = validateEmployeePhoneOwnership(employee, from);
+
+            if (!phoneValidation.ok) {
+              await sendTextMessage(
+                from,
+                `Ese username existe, pero este numero de WhatsApp no coincide con el registrado en Lurana (${maskPhoneNumber(phoneValidation.employeePhone)}).`
+              );
+              return;
+            }
+
+            session.employee = employee;
+            session.step = STEPS.CONFIRM_PROFILE;
+            session.lastCreateError = null;
+            saveSession(from, session);
+
+            await sendButtonsMessage(
+              from,
+              `Encontre estos datos:\n\n${employeeSummary(employee)}\n\nSon correctos?`,
+              [
+                { id: 'profile_ok', title: 'Si' },
+                { id: 'profile_retry', title: 'No' }
+              ]
+            );
+          } catch (error) {
+            console.error('[BOT][GET_USER] Error consultando getUserData:', describeHttpError(error));
+            await sendTextMessage(from, 'No pude consultar tus datos en este momento');
+          }
+
+          return;
         }
-        return;
 
       case STEPS.CONFIRM_PROFILE:
         if (input === 'profile_retry') {
