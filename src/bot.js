@@ -84,6 +84,8 @@ const EMPLOYEE_PHONE_KEY_TOKENS = [
   'whatsapp'
 ];
 const MANAGER_PANEL_BUTTON_ID = 'manager_center';
+const MANAGER_PENDING_BUTTON_ID = 'manager_pending';
+const MANAGER_HISTORY_BUTTON_ID = 'manager_history';
 
 function isValidCertificateFile(mimeType, filename) {
   // Si no hay ni mimeType ni filename, rechazar
@@ -867,6 +869,28 @@ function buildManagerRequestSummary(requestRecord) {
   return limitMessageLength(lines.filter((line) => line !== '').join('\n').replace(/\n{3,}/g, '\n\n'));
 }
 
+function buildManagerReviewedRequestSummary(requestRecord) {
+  const review = requestRecord?.manager_review || {};
+  const baseSummary = buildManagerRequestSummary(requestRecord)
+    .replace('\n\nSelecciona una opcion para registrar tu decision.\nSi observas o rechazas, luego deberas escribir un comentario obligatorio.', '')
+    .replace('\nSelecciona una opcion para registrar tu decision.\nSi observas o rechazas, luego deberas escribir un comentario obligatorio.', '');
+  const lines = [baseSummary, ''];
+
+  if (review.decision_display || review.decision) {
+    lines.push(`Decision: ${review.decision_display || review.decision}`);
+  }
+
+  if (review.decision_comment) {
+    lines.push(`Comentario: ${review.decision_comment}`);
+  }
+
+  if (review.decision_at) {
+    lines.push(`Fecha de decision: ${review.decision_at}`);
+  }
+
+  return limitMessageLength(lines.filter(Boolean).join('\n'));
+}
+
 function buildManagerQueueRows(requestRecords = []) {
   return requestRecords.slice(0, 10).map((requestRecord) => {
     const employeeName = getEmployeeFullName(requestRecord?.employee);
@@ -908,6 +932,20 @@ function getManagerPanelRequests() {
         0;
       return rightAt - leftAt;
     });
+}
+
+function getPendingManagerRequests() {
+  return getManagerPanelRequests().filter((requestRecord) => {
+    const status = normalizeText(requestRecord?.manager_review?.status || 'pending').toLowerCase();
+    return !status || status === 'pending';
+  });
+}
+
+function getManagerHistoryRequests() {
+  return getManagerPanelRequests().filter((requestRecord) => {
+    const status = normalizeText(requestRecord?.manager_review?.status || 'pending').toLowerCase();
+    return status && status !== 'pending';
+  });
 }
 
 function buildCreateCasePayload(employee, request) {
@@ -1116,6 +1154,8 @@ async function sendMainMenu(to, session, introText = '') {
 
   if (introText) {
     lines.push(introText);
+  } else if (managerMode) {
+    lines.push('Hola jefe.');
   } else if (employee) {
     lines.push(`Hola ${getEmployeeDisplayName(employee)}.`);
   } else {
@@ -1125,7 +1165,15 @@ async function sendMainMenu(to, session, introText = '') {
   lines.push(`Soy el asistente de *${config.companyName}*.`);
 
   if (managerMode) {
-    lines.push('Numero de jefe detectado.');
+    lines.push('Modo jefe activo.');
+    lines.push('', 'Que deseas revisar?');
+
+    await sendButtonsMessage(to, lines.join('\n'), [
+      { id: MANAGER_PENDING_BUTTON_ID, title: 'Pendientes' },
+      { id: MANAGER_HISTORY_BUTTON_ID, title: 'Historial' },
+      { id: 'exit_flow', title: 'Salir' }
+    ]);
+    return;
   }
 
   if (employee) {
@@ -1134,7 +1182,7 @@ async function sendMainMenu(to, session, introText = '') {
 
   lines.push('', 'Que deseas hacer?');
 
-  let buttons = employee
+  const buttons = employee
     ? [
         { id: 'menu_start', title: 'Nueva solicitud' },
         { id: 'change_user', title: 'Cambiar usuario' },
@@ -1144,14 +1192,6 @@ async function sendMainMenu(to, session, introText = '') {
         { id: 'menu_start', title: 'Nueva solicitud' },
         { id: 'exit_flow', title: 'Salir' }
       ];
-
-  if (managerMode) {
-    buttons = [
-      { id: 'menu_start', title: 'Nueva solicitud' },
-      { id: MANAGER_PANEL_BUTTON_ID, title: 'Panel jefe' },
-      { id: 'exit_flow', title: 'Salir' }
-    ];
-  }
 
   await sendButtonsMessage(to, lines.join('\n'), buttons);
 }
@@ -1966,13 +2006,25 @@ async function handlePendingManagerReviewComment(from, messageId, input, plainTe
   );
 }
 
-async function sendManagerPanel(to, body = 'Solicitudes del jefe') {
-  const requests = getManagerPanelRequests();
+async function sendManagerPanel(to, body = 'Panel del jefe') {
+  await sendButtonsMessage(
+    to,
+    body,
+    [
+      { id: MANAGER_PENDING_BUTTON_ID, title: 'Pendientes' },
+      { id: MANAGER_HISTORY_BUTTON_ID, title: 'Historial' },
+      { id: 'menu', title: 'Menu' }
+    ]
+  );
+}
+
+async function sendManagerPendingRequests(to, body = 'Solicitudes pendientes') {
+  const requests = getPendingManagerRequests();
 
   if (!requests.length) {
-    await sendTextMessage(
+    await sendManagerPanel(
       to,
-      'No hay solicitudes registradas todavia para revisar. Puedes crear una con POST /test-manager-notification.'
+      'No hay solicitudes pendientes para revisar. Puedes crear una con POST /test-manager-notification.'
     );
     return;
   }
@@ -1980,14 +2032,40 @@ async function sendManagerPanel(to, body = 'Solicitudes del jefe') {
   await sendListMessage(
     to,
     body,
-    'Ver solicitudes',
-    buildListSections('Solicitudes', buildManagerQueueRows(requests))
+    'Ver pendientes',
+    buildListSections('Pendientes', buildManagerQueueRows(requests))
+  );
+}
+
+async function sendManagerHistoryRequests(to, body = 'Historial de solicitudes') {
+  const requests = getManagerHistoryRequests();
+
+  if (!requests.length) {
+    await sendManagerPanel(
+      to,
+      'No hay solicitudes en el historial todavia.'
+    );
+    return;
+  }
+
+  await sendListMessage(
+    to,
+    body,
+    'Ver historial',
+    buildListSections('Historial', buildManagerQueueRows(requests))
   );
 }
 
 async function sendManagerRequestActionPrompt(to, requestRecord) {
   if (!requestRecord) {
     await sendTextMessage(to, 'No encontre la solicitud seleccionada.');
+    return;
+  }
+
+  const currentStatus = normalizeText(requestRecord?.manager_review?.status || 'pending').toLowerCase();
+
+  if (currentStatus && currentStatus !== 'pending') {
+    await sendTextMessage(to, buildManagerReviewedRequestSummary(requestRecord));
     return;
   }
 
@@ -2395,6 +2473,16 @@ async function processMessage(message) {
           return;
         }
 
+        if (isManagerPhone(from) && input === MANAGER_PENDING_BUTTON_ID) {
+          await sendManagerPendingRequests(from);
+          return;
+        }
+
+        if (isManagerPhone(from) && input === MANAGER_HISTORY_BUTTON_ID) {
+          await sendManagerHistoryRequests(from);
+          return;
+        }
+
         {
           const selectedManagerRequestId = parseManagerRequestSelection(input);
 
@@ -2412,6 +2500,18 @@ async function processMessage(message) {
           session.step = STEPS.USERNAME;
           saveSession(from, session);
           await sendTextMessage(from, 'Perfil olvidado. Escribe tu username corporativo');
+          return;
+        }
+
+        if (isManagerPhone(from) && (
+          input === 'menu_start' ||
+          inputLower === 'nueva solicitud' ||
+          inputLower === 'iniciar'
+        )) {
+          await sendManagerPanel(
+            from,
+            'Este numero esta configurado como jefe. Usa Pendientes o Historial para revisar solicitudes.'
+          );
           return;
         }
 
