@@ -155,11 +155,15 @@ async function getUserDataByPhone(phone) {
   const lookupTemplates = buildPhoneLookupTemplates();
   const phoneCandidates = buildPhoneLookupCandidates(rawPhone);
   let lastLookupError = null;
+  const attempts = [];
 
   if (!rawPhone || !lookupTemplates.length || !phoneCandidates.length) {
     setLastUserLookup({
       lookupType: 'phone',
       phone: rawPhone,
+      phoneCandidates,
+      lookupTemplates,
+      attempts,
       response: null,
       error: 'Phone lookup is not configured or the phone is empty'
     });
@@ -182,14 +186,33 @@ async function getUserDataByPhone(phone) {
         setLastUserLookup({
           lookupType: 'phone',
           phone: rawPhone,
+          phoneCandidates,
+          lookupTemplates,
           normalizedPhone: phoneCandidate,
           requestPath,
+          attempts: [
+            ...attempts,
+            {
+              phoneCandidate,
+              requestPath,
+              status: response.status,
+              ok: true
+            }
+          ],
           response: response.data,
           error: null
         });
 
         return response.data;
       } catch (error) {
+        attempts.push({
+          phoneCandidate,
+          requestPath,
+          status: Number(error?.response?.status || 0) || null,
+          ok: false,
+          error: getDebugErrorValue(error)
+        });
+
         if (isPhoneLookupMiss(error)) {
           lastLookupError = error;
           continue;
@@ -198,8 +221,11 @@ async function getUserDataByPhone(phone) {
         setLastUserLookup({
           lookupType: 'phone',
           phone: rawPhone,
+          phoneCandidates,
+          lookupTemplates,
           normalizedPhone: phoneCandidate,
           requestPath,
+          attempts,
           response: null,
           error: getDebugErrorValue(error)
         });
@@ -212,6 +238,9 @@ async function getUserDataByPhone(phone) {
   setLastUserLookup({
     lookupType: 'phone',
     phone: rawPhone,
+    phoneCandidates,
+    lookupTemplates,
+    attempts,
     response: null,
     error: lastLookupError ? getDebugErrorValue(lastLookupError) : 'No user found for phone'
   });

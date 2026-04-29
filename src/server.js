@@ -494,11 +494,15 @@ app.get('/test-lurana-user/:username', async (req, res) => {
 
 app.get('/test-lurana-phone/:phone', async (req, res) => {
   try {
-    const data = await getUserDataByPhone(req.params.phone);
+    const requestedPhone = String(req.params.phone || '').trim();
+    const data = await getUserDataByPhone(requestedPhone);
+    const lookup = getLastUserLookup();
 
     if (!data) {
       return res.status(404).json({
         ok: false,
+        requestedPhone,
+        lookup,
         error: {
           message: 'No se encontro un usuario para ese numero'
         }
@@ -507,11 +511,17 @@ app.get('/test-lurana-phone/:phone', async (req, res) => {
 
     return res.json({
       ok: true,
+      requestedPhone,
+      lookup,
       data
     });
   } catch (error) {
     console.error('[TEST][LURANA_PHONE] Error:', describeHttpError(error));
-    return res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
+    return res.status(getHttpStatusFromError(error)).json({
+      ...buildErrorResponse(error),
+      requestedPhone: String(req.params.phone || '').trim(),
+      lookup: getLastUserLookup()
+    });
   }
 });
 
