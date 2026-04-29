@@ -83,6 +83,7 @@ const EMPLOYEE_PHONE_KEY_TOKENS = [
   'celular',
   'whatsapp'
 ];
+const MANAGER_PANEL_BUTTON_ID = 'manager_center';
 
 function isValidCertificateFile(mimeType, filename) {
   // Si no hay ni mimeType ni filename, rechazar
@@ -600,6 +601,16 @@ function getManagerNotificationPhone() {
   return normalizePhoneNumber(config.managerNotificationNumber, config.defaultCountryCode);
 }
 
+function isManagerPhone(phone) {
+  const managerPhone = getManagerNotificationPhone();
+
+  if (!managerPhone) {
+    return false;
+  }
+
+  return phoneNumbersMatch(phone, managerPhone, config.defaultCountryCode);
+}
+
 function parseManagerAction(input) {
   const normalizedInput = normalizeText(input);
   const match = /^(manager_approve|manager_observe|manager_reject):([a-z0-9-]+)$/i.exec(normalizedInput);
@@ -612,6 +623,17 @@ function parseManagerAction(input) {
     action: match[1].toLowerCase(),
     requestId: match[2]
   };
+}
+
+function parseManagerRequestSelection(input) {
+  const normalizedInput = normalizeText(input);
+  const match = /^manager_request:([a-z0-9-]+)$/i.exec(normalizedInput);
+
+  if (!match) {
+    return '';
+  }
+
+  return match[1];
 }
 
 function getManagerDecisionDetails(action) {
@@ -845,6 +867,49 @@ function buildManagerRequestSummary(requestRecord) {
   return limitMessageLength(lines.filter((line) => line !== '').join('\n').replace(/\n{3,}/g, '\n\n'));
 }
 
+function buildManagerQueueRows(requestRecords = []) {
+  return requestRecords.slice(0, 10).map((requestRecord) => {
+    const employeeName = getEmployeeFullName(requestRecord?.employee);
+    const request = requestRecord?.request || {};
+    const requestType = getRequestTypeOption(request);
+    const reviewStatus = normalizeText(requestRecord?.manager_review?.status || 'pending').toLowerCase();
+    const statusLabel =
+      reviewStatus === 'approved'
+        ? 'Aprobada'
+        : reviewStatus === 'observed'
+          ? 'Observada'
+          : reviewStatus === 'rejected'
+            ? 'Rechazada'
+            : 'Pendiente';
+
+    return {
+      id: `manager_request:${requestRecord?.local_request_id || request.request_id || ''}`,
+      title: truncateText(`${employeeName} - ${requestType.label}`, 24),
+      description: truncateText(
+        `${statusLabel} | ${request.startDate || 'Sin fecha'} | ${requestRecord?.local_request_id || 'Sin id'}`,
+        72
+      )
+    };
+  }).filter((row) => row.id !== 'manager_request:');
+}
+
+function getManagerPanelRequests() {
+  return listRequests()
+    .sort((left, right) => {
+      const leftAt =
+        Date.parse(left?.manager_review?.pending_comment_requested_at || '') ||
+        Date.parse(left?.manager_review?.decision_at || '') ||
+        Date.parse(left?.manager_review?.notified_at || '') ||
+        0;
+      const rightAt =
+        Date.parse(right?.manager_review?.pending_comment_requested_at || '') ||
+        Date.parse(right?.manager_review?.decision_at || '') ||
+        Date.parse(right?.manager_review?.notified_at || '') ||
+        0;
+      return rightAt - leftAt;
+    });
+}
+
 function buildCreateCasePayload(employee, request) {
   const requestType = getRequestTypeOption(request);
   const timeUnit = getTimeUnitOption(request);
@@ -1046,6 +1111,7 @@ async function deleteTempFile(filePath) {
 
 async function sendMainMenu(to, session, introText = '') {
   const employee = session?.employee || null;
+  const managerMode = isManagerPhone(to);
   const lines = [];
 
   if (introText) {
@@ -1058,13 +1124,17 @@ async function sendMainMenu(to, session, introText = '') {
 
   lines.push(`Soy el asistente de *${config.companyName}*.`);
 
+  if (managerMode) {
+    lines.push('Numero de jefe detectado.');
+  }
+
   if (employee) {
     lines.push(`Perfil activo: ${employee.userName || employee.email || 'sin username'}`);
   }
 
   lines.push('', 'Que deseas hacer?');
 
-  const buttons = employee
+  let buttons = employee
     ? [
         { id: 'menu_start', title: 'Nueva solicitud' },
         { id: 'change_user', title: 'Cambiar usuario' },
@@ -1074,6 +1144,14 @@ async function sendMainMenu(to, session, introText = '') {
         { id: 'menu_start', title: 'Nueva solicitud' },
         { id: 'exit_flow', title: 'Salir' }
       ];
+
+  if (managerMode) {
+    buttons = [
+      { id: 'menu_start', title: 'Nueva solicitud' },
+      { id: MANAGER_PANEL_BUTTON_ID, title: 'Panel jefe' },
+      { id: 'exit_flow', title: 'Salir' }
+    ];
+  }
 
   await sendButtonsMessage(to, lines.join('\n'), buttons);
 }
@@ -1888,6 +1966,42 @@ async function handlePendingManagerReviewComment(from, messageId, input, plainTe
   );
 }
 
+async function sendManagerPanel(to, body = 'Solicitudes del jefe') {
+  const requests = getManagerPanelRequests();
+
+  if (!requests.length) {
+    await sendTextMessage(
+      to,
+      'No hay solicitudes registradas todavia para revisar. Puedes crear una con POST /test-manager-notification.'
+    );
+    return;
+  }
+
+  await sendListMessage(
+    to,
+    body,
+    'Ver solicitudes',
+    buildListSections('Solicitudes', buildManagerQueueRows(requests))
+  );
+}
+
+async function sendManagerRequestActionPrompt(to, requestRecord) {
+  if (!requestRecord) {
+    await sendTextMessage(to, 'No encontre la solicitud seleccionada.');
+    return;
+  }
+
+  await sendButtonsMessage(
+    to,
+    buildManagerRequestSummary(requestRecord),
+    [
+      { id: `${MANAGER_APPROVE_ACTION}:${requestRecord.local_request_id}`, title: 'Aprobar' },
+      { id: `${MANAGER_OBSERVE_ACTION}:${requestRecord.local_request_id}`, title: 'Observar' },
+      { id: `${MANAGER_REJECT_ACTION}:${requestRecord.local_request_id}`, title: 'Rechazar' }
+    ]
+  );
+}
+
 async function handleManagerDecision(from, messageId, input) {
   const managerAction = parseManagerAction(input);
 
@@ -2269,6 +2383,28 @@ async function processMessage(message) {
 
     switch (session.step) {
       case STEPS.MENU:
+        if (
+          isManagerPhone(from) &&
+          (
+            input === MANAGER_PANEL_BUTTON_ID ||
+            inputLower === 'panel jefe' ||
+            inputLower === 'jefe'
+          )
+        ) {
+          await sendManagerPanel(from);
+          return;
+        }
+
+        {
+          const selectedManagerRequestId = parseManagerRequestSelection(input);
+
+          if (isManagerPhone(from) && selectedManagerRequestId) {
+            const selectedRequest = getRequest(selectedManagerRequestId);
+            await sendManagerRequestActionPrompt(from, selectedRequest);
+            return;
+          }
+        }
+
         if (input === 'change_user' || inputLower === 'cambiar usuario') {
           clearProfile(from);
           session.employee = null;
