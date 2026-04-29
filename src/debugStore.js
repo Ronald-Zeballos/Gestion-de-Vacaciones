@@ -1,6 +1,7 @@
 const store = {
   lastUserLookup: null,
   lastCreateCase: null,
+  lastUpdatePtoData: null,
   lastCasesQuery: null,
   lastMedia: null,
   lastIncoming: null
@@ -29,6 +30,15 @@ function setLastCreateCase(data) {
 
 function getLastCreateCase() {
   return store.lastCreateCase;
+}
+
+function setLastUpdatePtoData(data) {
+  store.lastUpdatePtoData = buildEntry(data);
+  return store.lastUpdatePtoData;
+}
+
+function getLastUpdatePtoData() {
+  return store.lastUpdatePtoData;
 }
 
 function setLastCasesQuery(data) {
@@ -61,6 +71,7 @@ function getLastIncoming() {
 function clear() {
   store.lastUserLookup = null;
   store.lastCreateCase = null;
+  store.lastUpdatePtoData = null;
   store.lastCasesQuery = null;
   store.lastMedia = null;
   store.lastIncoming = null;
@@ -71,6 +82,8 @@ module.exports = {
   getLastUserLookup,
   setLastCreateCase,
   getLastCreateCase,
+  setLastUpdatePtoData,
+  getLastUpdatePtoData,
   setLastCasesQuery,
   getLastCasesQuery,
   setLastMedia,

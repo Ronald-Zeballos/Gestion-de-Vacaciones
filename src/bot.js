@@ -7,7 +7,8 @@ const {
   clearSession,
   saveRequest,
   getRequest,
-  updateRequest
+  updateRequest,
+  listRequests
 } = require('./storage');
 const {
   getProfile,
@@ -46,8 +47,10 @@ const {
   getUserData,
   getUserDataByPhone,
   createPtoCase,
+  updatePtoData,
   uploadInputDocument,
-  extractAppUid
+  extractAppUid,
+  extractAppNumber
 } = require('./luranaApi');
 const { downloadWhatsAppMediaById } = require('./whatsappMedia');
 
@@ -69,6 +72,7 @@ const STEPS = {
 const DENIED_CERT_EXTENSIONS = ['.exe', '.bat', '.sh', '.cmd', '.com', '.pif', '.scr', '.vbs', '.js', '.jar'];
 const DENIED_CERT_MIMETYPES = ['application/x-msdownload', 'application/x-msdos-program', 'application/x-executable', 'application/x-elf'];
 const MANAGER_APPROVE_ACTION = 'manager_approve';
+const MANAGER_OBSERVE_ACTION = 'manager_observe';
 const MANAGER_REJECT_ACTION = 'manager_reject';
 const EMPLOYEE_PHONE_KEY_TOKENS = [
   'phone',
@@ -598,7 +602,7 @@ function getManagerNotificationPhone() {
 
 function parseManagerAction(input) {
   const normalizedInput = normalizeText(input);
-  const match = /^(manager_approve|manager_reject):([a-z0-9-]+)$/i.exec(normalizedInput);
+  const match = /^(manager_approve|manager_observe|manager_reject):([a-z0-9-]+)$/i.exec(normalizedInput);
 
   if (!match) {
     return null;
@@ -615,15 +619,156 @@ function getManagerDecisionDetails(action) {
     return {
       status: 'approved',
       statusLabel: 'aprobada',
-      confirmationLabel: 'Aprobada'
+      confirmationLabel: 'Aprobada',
+      actionCode: 1,
+      actionLabel: 'Aprobar',
+      requiresComment: false
     };
   }
 
+  if (action === MANAGER_OBSERVE_ACTION) {
+    return {
+      status: 'observed',
+      statusLabel: 'observada',
+      confirmationLabel: 'Observada',
+      actionCode: 2,
+      actionLabel: 'Observar',
+      requiresComment: true
+    };
+  }
+
+  if (action === MANAGER_REJECT_ACTION) {
+    return {
+      status: 'rejected',
+      statusLabel: 'rechazada',
+      confirmationLabel: 'Rechazada',
+      actionCode: 3,
+      actionLabel: 'Rechazar',
+      requiresComment: true
+    };
+  }
+
+  return null;
+}
+
+function getManagerActionFromStatus(status) {
+  const normalizedStatus = normalizeText(status).toLowerCase();
+
+  if (normalizedStatus === 'approved') {
+    return MANAGER_APPROVE_ACTION;
+  }
+
+  if (normalizedStatus === 'observed') {
+    return MANAGER_OBSERVE_ACTION;
+  }
+
+  if (normalizedStatus === 'rejected' || normalizedStatus === 'denied') {
+    return MANAGER_REJECT_ACTION;
+  }
+
+  return '';
+}
+
+function buildManagerCommentPrompt(requestRecord, decision) {
+  const lines = [
+    `${decision.actionLabel} solicitud`,
+    '',
+    `Solicitud: ${requestRecord?.local_request_id || requestRecord?.request?.request_id || 'Sin id'}`
+  ];
+
+  if (requestRecord?.app_uid) {
+    lines.push(`Caso: ${requestRecord.app_uid}`);
+  }
+
+  lines.push('');
+  lines.push('Escribe el comentario del revisor.');
+  lines.push('Este comentario es obligatorio para observar o rechazar.');
+  lines.push('Si no deseas continuar, escribe "cancelar".');
+
+  return lines.join('\n');
+}
+
+function buildManagerDecisionSyncPayload(requestRecord, decision, comment = '') {
+  if (!requestRecord || !decision) {
+    return null;
+  }
+
+  const appUid = requestRecord.app_uid || extractAppUid(requestRecord.lurana_response) || '';
+  const appNumber = requestRecord.app_number || extractAppNumber(requestRecord.lurana_response) || '';
+  const variables = [
+    {
+      [config.luranaReviewActionVar]: decision.actionCode,
+      [config.luranaReviewActionLabelVar]: decision.actionLabel
+    }
+  ];
+  const normalizedComment = normalizeText(comment);
+
+  if (decision.requiresComment && normalizedComment) {
+    variables[0][config.luranaReviewCommentVar] = normalizedComment;
+  }
+
   return {
-    status: 'denied',
-    statusLabel: 'denegada',
-    confirmationLabel: 'Denegada'
+    appUid,
+    appNumber,
+    userId: requestRecord?.employee?.userId || '',
+    userName: requestRecord?.employee?.userName || '',
+    variables
   };
+}
+
+function findPendingManagerCommentRequest(phone) {
+  const normalizedPhone = normalizePhoneNumber(phone, config.defaultCountryCode);
+
+  if (!normalizedPhone) {
+    return null;
+  }
+
+  const matches = listRequests()
+    .filter((requestRecord) =>
+      normalizePhoneNumber(
+        requestRecord?.manager_review?.pending_comment_from,
+        config.defaultCountryCode
+      ) === normalizedPhone &&
+      normalizeText(requestRecord?.manager_review?.pending_action)
+    )
+    .sort((left, right) => {
+      const leftAt = Date.parse(left?.manager_review?.pending_comment_requested_at || '') || 0;
+      const rightAt = Date.parse(right?.manager_review?.pending_comment_requested_at || '') || 0;
+      return rightAt - leftAt;
+    });
+
+  return matches[0] || null;
+}
+
+function clearPendingManagerCommentRequests(phone, exceptRequestId = '') {
+  const normalizedPhone = normalizePhoneNumber(phone, config.defaultCountryCode);
+
+  if (!normalizedPhone) {
+    return;
+  }
+
+  for (const requestRecord of listRequests()) {
+    const requestId = requestRecord?.local_request_id || '';
+    const pendingFrom = normalizePhoneNumber(
+      requestRecord?.manager_review?.pending_comment_from,
+      config.defaultCountryCode
+    );
+
+    if (!requestId || requestId === exceptRequestId || pendingFrom !== normalizedPhone) {
+      continue;
+    }
+
+    updateRequest(requestId, (current) => ({
+      ...current,
+      manager_review: {
+        ...(current.manager_review || {}),
+        pending_action: '',
+        pending_comment_from: '',
+        pending_comment_requested_at: '',
+        pending_comment_message_id: ''
+      }
+    }));
+  }
 }
 
 function buildRequestSummary(session) {
@@ -672,6 +817,7 @@ function buildManagerRequestSummary(requestRecord) {
     'Nueva solicitud para revision',
     '',
     `Caso: ${requestRecord?.app_uid || 'Pendiente'}`,
+    `Nro. caso: ${requestRecord?.app_number || 'Pendiente'}`,
     `Solicitud: ${requestRecord?.local_request_id || request.request_id || 'Sin id'}`,
     `Empleado: ${getEmployeeFullName(employee)}`,
     `Telefono: ${requestRecord?.phone || ''}`,
@@ -694,6 +840,7 @@ function buildManagerRequestSummary(requestRecord) {
   lines.push(`Certificado medico: ${certificateStatus}`);
   lines.push('');
   lines.push('Selecciona una opcion para registrar tu decision.');
+  lines.push('Si observas o rechazas, luego deberas escribir un comentario obligatorio.');
 
   return limitMessageLength(lines.filter((line) => line !== '').join('\n').replace(/\n{3,}/g, '\n\n'));
 }
@@ -730,6 +877,71 @@ function buildCreateCasePayload(employee, request) {
       }
     ]
   };
+}
+
+function buildTestEmployeePayload(rawEmployee = {}, fallbackPhone = '') {
+  return {
+    userId: normalizeText(rawEmployee.userId || rawEmployee.id || '4'),
+    userName: normalizeText(rawEmployee.userName || rawEmployee.username || 'prueba.bot'),
+    firstName: normalizeText(rawEmployee.firstName || 'Prueba'),
+    lastName: normalizeText(rawEmployee.lastName || 'Colaborador'),
+    email: normalizeText(rawEmployee.email || 'prueba.bot@luranasoft.local'),
+    phone: normalizePhoneNumber(
+      rawEmployee.phone || fallbackPhone || getManagerNotificationPhone(),
+      config.defaultCountryCode
+    )
+  };
+}
+
+function buildTestRequestPayload(rawRequest = {}, fallbackRequestId = '') {
+  const request = {
+    ...createEmptyRequest(),
+    ...rawRequest
+  };
+  const normalizedRequestTypeCode = Number(request.typeRequestCode) || 1;
+  const normalizedTimeUnitCode = Number(request.timeUnitCode) || 1;
+  const requestType = findOptionByCode(REQUEST_TYPE_OPTIONS, normalizedRequestTypeCode) || REQUEST_TYPE_OPTIONS[0];
+  const timeUnit = findOptionByCode(TIME_UNIT_OPTIONS, normalizedTimeUnitCode) || TIME_UNIT_OPTIONS[0];
+  const isVacation = requestType.code === REQUEST_TYPE_OPTIONS[0].code;
+  const permissionTypeCode = isVacation
+    ? 0
+    : (Number(request.typePermissionCode) || PERMISSION_TYPE_OPTIONS[0].code);
+  const permissionType = findOptionByCode(PERMISSION_TYPE_OPTIONS, permissionTypeCode) || PERMISSION_TYPE_OPTIONS[0];
+
+  request.request_id = normalizeText(request.request_id || fallbackRequestId || uuidv4());
+  request.typeRequestCode = requestType.code;
+  request.typeRequestLabel = normalizeText(request.typeRequestLabel || requestType.label);
+  request.timeUnitCode = timeUnit.code;
+  request.timeUnitLabel = normalizeText(request.timeUnitLabel || timeUnit.label);
+  request.typePermissionCode = isVacation ? 0 : permissionType.code;
+  request.typePermissionLabel = isVacation
+    ? 'No aplica'
+    : normalizeText(request.typePermissionLabel || permissionType.label);
+  request.startDate = normalizeText(request.startDate || todayDate());
+  request.endDate = normalizeText(request.endDate || request.startDate);
+  request.reason = normalizeText(request.reason || 'Prueba automatica de notificacion al jefe');
+  request.certMedMediaId = normalizeText(request.certMedMediaId);
+  request.certMedMimeType = normalizeText(request.certMedMimeType);
+  request.certMedFilename = normalizeText(request.certMedFilename);
+  clearDateSelectionState(request);
+  clearTimeSelectionState(request);
+
+  if (timeUnit.code === TIME_UNIT_OPTIONS[1].code) {
+    request.endDate = request.startDate;
+    request.startTime = normalizeText(request.startTime || '09:00');
+    request.endTime = normalizeText(request.endTime || '11:00');
+    request.requestedDays = Number(request.requestedDays) > 0
+      ? Number(request.requestedDays)
+      : calculateRequestedHours(request.startTime, request.endTime);
+  } else {
+    request.startTime = '';
+    request.endTime = '';
+    request.requestedDays = Number(request.requestedDays) > 0
+      ? Number(request.requestedDays)
+      : calculateWorkingDays(request.startDate, request.endDate);
+  }
+
+  return request;
 }
 
 function buildCertificatePrompt() {
@@ -1247,6 +1459,7 @@ async function attachCertificateIfNeeded(session, appUid) {
 
 async function notifyEmployeeAboutManagerDecision(requestRecord, decision) {
   const employeePhone = normalizePhoneNumber(requestRecord?.phone, config.defaultCountryCode);
+  const decisionComment = normalizeText(requestRecord?.manager_review?.decision_comment);
 
   if (!employeePhone) {
     return {
@@ -1266,6 +1479,10 @@ async function notifyEmployeeAboutManagerDecision(requestRecord, decision) {
   }
 
   lines.push(`Solicitud: ${requestRecord?.local_request_id || requestRecord?.request?.request_id || 'Sin id'}`);
+
+  if (decisionComment) {
+    lines.push(`Comentario del revisor: ${decisionComment}`);
+  }
 
   await sendTextMessage(employeePhone, lines.join('\n'));
 
@@ -1319,7 +1536,8 @@ async function notifyManagerAboutRequest(requestRecord) {
       buildManagerRequestSummary(requestRecord),
       [
         { id: `${MANAGER_APPROVE_ACTION}:${requestId}`, title: 'Aprobar' },
-        { id: `${MANAGER_REJECT_ACTION}:${requestId}`, title: 'Denegar' }
+        { id: `${MANAGER_OBSERVE_ACTION}:${requestId}`, title: 'Observar' },
+        { id: `${MANAGER_REJECT_ACTION}:${requestId}`, title: 'Rechazar' }
       ]
     );
 
@@ -1367,6 +1585,309 @@ async function notifyManagerAboutRequest(requestRecord) {
   }
 }
 
+async function createManagerReviewTestRequest(input = {}) {
+  const localRequestId = normalizeText(
+    input.local_request_id ||
+    input.requestId ||
+    input?.request?.request_id ||
+    uuidv4()
+  );
+  const employeePhone = normalizePhoneNumber(
+    input.phone || input?.employee?.phone || getManagerNotificationPhone(),
+    config.defaultCountryCode
+  );
+  const employee = buildTestEmployeePayload(input.employee || {}, employeePhone);
+  const request = buildTestRequestPayload(input.request || {}, localRequestId);
+  const appUid = normalizeText(input.app_uid || input.appUid);
+  const appNumber = normalizeText(input.app_number || input.appNumber);
+  const requestRecord = {
+    local_request_id: localRequestId,
+    phone: employeePhone,
+    app_uid: appUid || null,
+    app_number: appNumber || null,
+    employee,
+    request,
+    lurana_payload: input.lurana_payload || null,
+    lurana_response: input.lurana_response || null,
+    cert_med_result: null,
+    cert_med_error: null,
+    manager_review: {
+      status: 'pending',
+      decision: '',
+      decision_at: '',
+      decided_by: '',
+      decision_message_id: '',
+      decision_code: null,
+      decision_comment: '',
+      decision_display: '',
+      pending_action: '',
+      pending_comment_from: '',
+      pending_comment_requested_at: '',
+      pending_comment_message_id: '',
+      notification_status: 'pending',
+      notified_at: '',
+      notified_to: getManagerNotificationPhone(),
+      notification_error: null,
+      lurana_sync_status: 'pending',
+      lurana_sync_at: '',
+      lurana_sync_payload: null,
+      lurana_sync_response: null,
+      lurana_sync_error: null,
+      history: []
+    }
+  };
+
+  saveRequest(localRequestId, requestRecord);
+
+  const managerNotification = await notifyManagerAboutRequest(requestRecord);
+  const storedRecord = getRequest(localRequestId) || requestRecord;
+
+  return {
+    requestRecord: storedRecord,
+    managerNotification
+  };
+}
+
+async function syncManagerDecisionToLurana(requestRecord, decision, comment = '') {
+  const requestId = requestRecord?.local_request_id || requestRecord?.request?.request_id || '';
+  const payload = buildManagerDecisionSyncPayload(requestRecord, decision, comment);
+  const syncAt = new Date().toISOString();
+  const missingFields = [
+    !payload?.appUid ? 'appUid' : '',
+    !payload?.appNumber ? 'appNumber' : '',
+    !payload?.userId ? 'userId' : '',
+    !payload?.userName ? 'userName' : ''
+  ].filter(Boolean);
+
+  if (!requestId) {
+    return {
+      sent: false,
+      skipped: true,
+      error: {
+        message: 'request_id_missing'
+      },
+      payload,
+      requestRecord
+    };
+  }
+
+  if (missingFields.length) {
+    const syncError = {
+      message: 'No se pudo sincronizar la decision con Lurana porque faltan datos requeridos',
+      missingFields
+    };
+    const updatedRecord = updateRequest(requestId, (current) => ({
+      ...current,
+      app_uid: current.app_uid || payload?.appUid || null,
+      app_number: current.app_number || payload?.appNumber || null,
+      manager_review: {
+        ...(current.manager_review || {}),
+        lurana_sync_status: 'skipped',
+        lurana_sync_at: syncAt,
+        lurana_sync_payload: payload,
+        lurana_sync_response: null,
+        lurana_sync_error: syncError
+      }
+    }));
+
+    return {
+      sent: false,
+      skipped: true,
+      error: syncError,
+      payload,
+      requestRecord: updatedRecord || requestRecord
+    };
+  }
+
+  try {
+    const response = await updatePtoData(payload);
+    const updatedRecord = updateRequest(requestId, (current) => ({
+      ...current,
+      app_uid: current.app_uid || payload?.appUid || null,
+      app_number: current.app_number || payload?.appNumber || null,
+      manager_review: {
+        ...(current.manager_review || {}),
+        lurana_sync_status: 'sent',
+        lurana_sync_at: syncAt,
+        lurana_sync_payload: payload,
+        lurana_sync_response: response,
+        lurana_sync_error: null
+      }
+    }));
+
+    return {
+      sent: true,
+      payload,
+      response,
+      requestRecord: updatedRecord || requestRecord
+    };
+  } catch (error) {
+    const detail = describeHttpError(error);
+    const updatedRecord = updateRequest(requestId, (current) => ({
+      ...current,
+      app_uid: current.app_uid || payload?.appUid || null,
+      app_number: current.app_number || payload?.appNumber || null,
+      manager_review: {
+        ...(current.manager_review || {}),
+        lurana_sync_status: 'error',
+        lurana_sync_at: syncAt,
+        lurana_sync_payload: payload,
+        lurana_sync_response: null,
+        lurana_sync_error: detail
+      }
+    }));
+
+    console.error('[MANAGER_REVIEW] Error sincronizando decision con Lurana:', detail);
+
+    return {
+      sent: false,
+      payload,
+      error: detail,
+      requestRecord: updatedRecord || requestRecord
+    };
+  }
+}
+
+async function finalizeManagerDecision(requestRecord, action, from, messageId, comment = '') {
+  const requestId = requestRecord?.local_request_id || requestRecord?.request?.request_id || '';
+  const decision = getManagerDecisionDetails(action);
+  const decisionAt = new Date().toISOString();
+  const normalizedComment = normalizeText(comment);
+
+  if (!requestId || !decision) {
+    return false;
+  }
+
+  const updatedRecord = updateRequest(requestId, (current) => ({
+    ...current,
+    manager_review: {
+      ...(current.manager_review || {}),
+      status: decision.status,
+      decision: decision.actionLabel,
+      decision_display: decision.confirmationLabel,
+      decision_code: decision.actionCode,
+      decision_comment: normalizedComment,
+      decision_at: decisionAt,
+      decided_by: normalizePhoneNumber(from, config.defaultCountryCode),
+      decision_message_id: messageId || '',
+      pending_action: '',
+      pending_comment_from: '',
+      pending_comment_requested_at: '',
+      pending_comment_message_id: '',
+      history: [
+        ...(Array.isArray(current?.manager_review?.history) ? current.manager_review.history : []),
+        {
+          at: decisionAt,
+          action,
+          status: decision.status,
+          decision: decision.actionLabel,
+          decision_code: decision.actionCode,
+          comment: normalizedComment,
+          decided_by: normalizePhoneNumber(from, config.defaultCountryCode)
+        }
+      ]
+    }
+  }));
+
+  if (!updatedRecord) {
+    await sendTextMessage(from, 'No pude registrar la decision para esta solicitud.');
+    return true;
+  }
+
+  const syncResult = await syncManagerDecisionToLurana(updatedRecord, decision, normalizedComment);
+  const finalRecord = syncResult.requestRecord || updatedRecord;
+  const confirmationLines = [
+    `${decision.confirmationLabel} registrada correctamente.`,
+    `Solicitud: ${finalRecord.local_request_id || requestId}`
+  ];
+
+  if (finalRecord.app_uid) {
+    confirmationLines.push(`Caso: ${finalRecord.app_uid}`);
+  }
+
+  if (normalizedComment) {
+    confirmationLines.push(`Comentario: ${normalizedComment}`);
+  }
+
+  if (syncResult.sent) {
+    confirmationLines.push('Decision enviada correctamente a Lurana.');
+  } else if (syncResult.skipped) {
+    confirmationLines.push('Aviso: la decision se guardo, pero no se pudo sincronizar con Lurana porque faltan datos.');
+  } else {
+    confirmationLines.push('Aviso: la decision se guardo, pero Lurana no confirmo la actualizacion.');
+  }
+
+  await sendTextMessage(from, confirmationLines.join('\n'));
+
+  try {
+    await notifyEmployeeAboutManagerDecision(finalRecord, decision);
+  } catch (error) {
+    console.error('[MANAGER_REVIEW] Error notificando al colaborador:', describeHttpError(error));
+  }
+
+  return true;
+}
+
+async function handlePendingManagerReviewComment(from, messageId, input, plainText, messageType = '') {
+  const managerPhone = getManagerNotificationPhone();
+
+  if (!managerPhone || !phoneNumbersMatch(from, managerPhone, config.defaultCountryCode)) {
+    return false;
+  }
+
+  const pendingRequest = findPendingManagerCommentRequest(from);
+
+  if (!pendingRequest) {
+    return false;
+  }
+
+  const pendingAction = normalizeText(pendingRequest?.manager_review?.pending_action).toLowerCase();
+  const decision = getManagerDecisionDetails(pendingAction);
+  const normalizedInput = normalizeText(input).toLowerCase();
+  const normalizedComment = normalizeText(plainText);
+
+  if (!decision?.requiresComment) {
+    return false;
+  }
+
+  if (normalizedInput === 'cancelar' || normalizedInput === 'cancel_flow' || normalizedInput === 'menu_cancel') {
+    updateRequest(pendingRequest.local_request_id, (current) => ({
+      ...current,
+      manager_review: {
+        ...(current.manager_review || {}),
+        pending_action: '',
+        pending_comment_from: '',
+        pending_comment_requested_at: '',
+        pending_comment_message_id: ''
+      }
+    }));
+
+    await sendTextMessage(
+      from,
+      'Se cancelo la captura del comentario del revisor. Si deseas decidir de nuevo, usa otra vez los botones de la solicitud.'
+    );
+    return true;
+  }
+
+  if (messageType !== 'text') {
+    await sendTextMessage(from, buildManagerCommentPrompt(pendingRequest, decision));
+    return true;
+  }
+
+  if (!normalizedComment) {
+    await sendTextMessage(from, buildManagerCommentPrompt(pendingRequest, decision));
+    return true;
+  }
+
+  return finalizeManagerDecision(
+    pendingRequest,
+    pendingAction,
+    from,
+    messageId || pendingRequest?.manager_review?.pending_comment_message_id || '',
+    normalizedComment
+  );
+}
+
 async function handleManagerDecision(from, messageId, input) {
   const managerAction = parseManagerAction(input);
 
@@ -1397,56 +1918,51 @@ async function handleManagerDecision(from, messageId, input) {
     return true;
   }
 
+  clearPendingManagerCommentRequests(from, managerAction.requestId);
+
   const currentStatus = normalizeText(requestRecord?.manager_review?.status).toLowerCase();
 
   if (currentStatus && currentStatus !== 'pending') {
-    const existingDecision = getManagerDecisionDetails(
-      currentStatus === 'approved' ? MANAGER_APPROVE_ACTION : MANAGER_REJECT_ACTION
-    );
+    const existingAction = getManagerActionFromStatus(currentStatus);
+    const existingDecision = existingAction ? getManagerDecisionDetails(existingAction) : null;
     await sendTextMessage(
       from,
-      `Esta solicitud ya fue ${existingDecision.statusLabel}. No puedo cambiar la decision desde este boton.`
+      existingDecision
+        ? `Esta solicitud ya fue ${existingDecision.statusLabel}. No puedo cambiar la decision desde este boton.`
+        : 'Esta solicitud ya tiene una decision registrada. No puedo cambiarla desde este boton.'
     );
     return true;
   }
 
   const decision = getManagerDecisionDetails(managerAction.action);
-  const decisionAt = new Date().toISOString();
-  const updatedRecord = updateRequest(managerAction.requestId, (current) => ({
-    ...current,
-    manager_review: {
-      ...(current.manager_review || {}),
-      status: decision.status,
-      decision: decision.confirmationLabel,
-      decision_at: decisionAt,
-      decided_by: normalizePhoneNumber(from, config.defaultCountryCode),
-      decision_message_id: messageId || ''
-    }
-  }));
 
-  if (!updatedRecord) {
-    await sendTextMessage(from, 'No pude registrar la decision para esta solicitud.');
+  if (!decision) {
+    await sendTextMessage(from, 'La accion solicitada no es valida para esta revision.');
     return true;
   }
 
-  const confirmationLines = [
-    `${decision.confirmationLabel} registrada correctamente.`,
-    `Solicitud: ${updatedRecord.local_request_id || managerAction.requestId}`
-  ];
+  if (decision.requiresComment) {
+    const updatedRecord = updateRequest(managerAction.requestId, (current) => ({
+      ...current,
+      manager_review: {
+        ...(current.manager_review || {}),
+        pending_action: managerAction.action,
+        pending_comment_from: normalizePhoneNumber(from, config.defaultCountryCode),
+        pending_comment_requested_at: new Date().toISOString(),
+        pending_comment_message_id: messageId || ''
+      }
+    }));
 
-  if (updatedRecord.app_uid) {
-    confirmationLines.push(`Caso: ${updatedRecord.app_uid}`);
+    if (!updatedRecord) {
+      await sendTextMessage(from, 'No pude preparar la captura del comentario para esta solicitud.');
+      return true;
+    }
+
+    await sendTextMessage(from, buildManagerCommentPrompt(updatedRecord, decision));
+    return true;
   }
 
-  await sendTextMessage(from, confirmationLines.join('\n'));
-
-  try {
-    await notifyEmployeeAboutManagerDecision(updatedRecord, decision);
-  } catch (error) {
-    console.error('[MANAGER_REVIEW] Error notificando al colaborador:', describeHttpError(error));
-  }
-
-  return true;
+  return finalizeManagerDecision(requestRecord, managerAction.action, from, messageId, '');
 }
 
 async function resetConversationToMenu(phone, employee = null, introText = '', lastProcessedMessageId = '') {
@@ -1660,6 +2176,10 @@ async function processMessage(message) {
   if (!from) return;
 
   if (await handleManagerDecision(from, messageId, input)) {
+    return;
+  }
+
+  if (await handlePendingManagerReviewComment(from, messageId, input, plainText, message.type)) {
     return;
   }
 
@@ -2064,12 +2584,14 @@ async function processMessage(message) {
           const payload = buildCreateCasePayload(session.employee, requestSnapshot);
           const apiResponse = await createPtoCase(payload);
           const appUid = extractAppUid(apiResponse);
+          const appNumber = extractAppNumber(apiResponse);
           let certificateResult = null;
           let attachmentError = null;
 
           console.log('[LURANA_CASE] Caso creado:', {
             requestId: requestSnapshot.request_id,
-            appUid: appUid || null
+            appUid: appUid || null,
+            appNumber: appNumber || null
           });
 
           if (requestSnapshot.certMedMediaId) {
@@ -2088,6 +2610,7 @@ async function processMessage(message) {
             local_request_id: requestSnapshot.request_id,
             phone: from,
             app_uid: appUid || null,
+            app_number: appNumber || null,
             employee: session.employee,
             request: requestSnapshot,
             lurana_payload: payload,
@@ -2100,10 +2623,23 @@ async function processMessage(message) {
               decision_at: '',
               decided_by: '',
               decision_message_id: '',
+              decision_code: null,
+              decision_comment: '',
+              decision_display: '',
+              pending_action: '',
+              pending_comment_from: '',
+              pending_comment_requested_at: '',
+              pending_comment_message_id: '',
               notification_status: 'pending',
               notified_at: '',
               notified_to: getManagerNotificationPhone(),
-              notification_error: null
+              notification_error: null,
+              lurana_sync_status: 'pending',
+              lurana_sync_at: '',
+              lurana_sync_payload: null,
+              lurana_sync_response: null,
+              lurana_sync_error: null,
+              history: []
             }
           });
 
@@ -2111,6 +2647,7 @@ async function processMessage(message) {
             local_request_id: requestSnapshot.request_id,
             phone: from,
             app_uid: appUid || null,
+            app_number: appNumber || null,
             employee: session.employee,
             request: requestSnapshot
           });
@@ -2176,5 +2713,6 @@ async function processMessage(message) {
 }
 
 module.exports = {
-  processMessage
+  processMessage,
+  createManagerReviewTestRequest
 };

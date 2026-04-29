@@ -7,6 +7,7 @@ const { getAccessToken } = require('./luranaAuth');
 const {
   setLastUserLookup,
   setLastCreateCase,
+  setLastUpdatePtoData,
   setLastCasesQuery
 } = require('./debugStore');
 const {
@@ -68,6 +69,45 @@ function collectAppUidCandidates(value, depth = 0, found = []) {
 
 function extractAppUid(responseData) {
   const candidates = collectAppUidCandidates(responseData);
+  return candidates[0] || '';
+}
+
+function collectAppNumberCandidates(value, depth = 0, found = []) {
+  if (!value || depth > 5) {
+    return found;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectAppNumberCandidates(item, depth + 1, found);
+    }
+
+    return found;
+  }
+
+  if (typeof value !== 'object') {
+    return found;
+  }
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase();
+
+    if (
+      ['app_number', 'appnumber', 'casenumber', 'case_number'].includes(normalizedKey) &&
+      (typeof nestedValue === 'string' || typeof nestedValue === 'number') &&
+      String(nestedValue).trim()
+    ) {
+      found.push(String(nestedValue).trim());
+    }
+
+    collectAppNumberCandidates(nestedValue, depth + 1, found);
+  }
+
+  return found;
+}
+
+function extractAppNumber(responseData) {
+  const candidates = collectAppNumberCandidates(responseData);
   return candidates[0] || '';
 }
 
@@ -254,7 +294,8 @@ async function createPtoCase(payload) {
     payload,
     response: null,
     error: null,
-    extractedAppUid: null
+    extractedAppUid: null,
+    extractedAppNumber: null
   });
 
   try {
@@ -273,12 +314,22 @@ async function createPtoCase(payload) {
       response.data?.data?.caseUid ||
       extractAppUid(response.data) ||
       null;
+    const extractedAppNumber =
+      response.data?.app_number ||
+      response.data?.data?.app_number ||
+      response.data?.appNumber ||
+      response.data?.data?.appNumber ||
+      response.data?.caseNumber ||
+      response.data?.data?.caseNumber ||
+      extractAppNumber(response.data) ||
+      null;
 
     setLastCreateCase({
       payload,
       response: response.data,
       error: null,
-      extractedAppUid
+      extractedAppUid,
+      extractedAppNumber
     });
 
     return response.data;
@@ -287,7 +338,41 @@ async function createPtoCase(payload) {
       payload,
       response: null,
       error: getDebugErrorValue(error),
-      extractedAppUid: null
+      extractedAppUid: null,
+      extractedAppNumber: null
+    });
+
+    throw error;
+  }
+}
+
+async function updatePtoData(payload) {
+  const url = `${apiBase()}/plugin-PsManagementTools/updatePtoData`;
+  setLastUpdatePtoData({
+    payload,
+    response: null,
+    error: null
+  });
+
+  try {
+    const response = await axios.post(url, payload, {
+      headers: await authHeaders({ 'Content-Type': 'application/json' }),
+      timeout: 20000,
+      maxRedirects: 0
+    });
+
+    setLastUpdatePtoData({
+      payload,
+      response: response.data,
+      error: null
+    });
+
+    return response.data;
+  } catch (error) {
+    setLastUpdatePtoData({
+      payload,
+      response: null,
+      error: getDebugErrorValue(error)
     });
 
     throw error;
@@ -385,7 +470,9 @@ module.exports = {
   getUserData,
   getUserDataByPhone,
   createPtoCase,
+  updatePtoData,
   listRecentCases,
   uploadInputDocument,
-  extractAppUid
+  extractAppUid,
+  extractAppNumber
 };

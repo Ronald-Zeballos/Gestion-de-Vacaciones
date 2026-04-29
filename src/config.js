@@ -31,5 +31,9 @@ module.exports = {
   luranaCertInpDocUid: process.env.LURANA_CERT_INP_DOC_UID || '',
   luranaPhoneLookupPaths:
     process.env.LURANA_PHONE_LOOKUP_PATHS ||
-    'plugin-PsManagementTools/getUserDataByPhone/{phone},plugin-PsManagementTools/getUserData/{phone}'
+    'plugin-PsManagementTools/getUserDataByPhone/{phone},plugin-PsManagementTools/getUserData/{phone}',
+  luranaReviewActionVar: process.env.LURANA_REVIEW_ACTION_VAR || 'var_action_reviewer',
+  luranaReviewActionLabelVar:
+    process.env.LURANA_REVIEW_ACTION_LABEL_VAR || 'var_action_reviewer_label',
+  luranaReviewCommentVar: process.env.LURANA_REVIEW_COMMENT_VAR || 'var_comments_reviewer'
 };

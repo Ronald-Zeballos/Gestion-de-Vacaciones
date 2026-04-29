@@ -8,20 +8,23 @@ const {
   getRequest,
   findRequestByAppUid
 } = require('./storage');
-const { processMessage } = require('./bot');
+const { processMessage, createManagerReviewTestRequest } = require('./bot');
 const {
   getUserData,
   getUserDataByPhone,
   createPtoCase,
+  updatePtoData,
   listRecentCases,
   uploadInputDocument,
-  extractAppUid
+  extractAppUid,
+  extractAppNumber
 } = require('./luranaApi');
 const { downloadWhatsAppMediaById } = require('./whatsappMedia');
 const { describeHttpError, getHttpStatusFromError } = require('./utils');
 const {
   getLastUserLookup,
   getLastCreateCase,
+  getLastUpdatePtoData,
   getLastCasesQuery,
   getLastMedia,
   getLastIncoming,
@@ -215,6 +218,9 @@ function buildDebugEnvPayload() {
     LURANA_TAS_UID: config.luranaTasUid,
     LURANA_CERT_INP_DOC_UID: config.luranaCertInpDocUid,
     LURANA_PHONE_LOOKUP_PATHS: config.luranaPhoneLookupPaths,
+    LURANA_REVIEW_ACTION_VAR: config.luranaReviewActionVar,
+    LURANA_REVIEW_ACTION_LABEL_VAR: config.luranaReviewActionLabelVar,
+    LURANA_REVIEW_COMMENT_VAR: config.luranaReviewCommentVar,
     LURANA_TOKEN_URL: config.luranaTokenUrl,
     WHATSAPP_PHONE_NUMBER_ID: config.phoneNumberId,
     MANAGER_NOTIFICATION_NUMBER: maskValue(config.managerNotificationNumber),
@@ -239,8 +245,12 @@ function getManagerDecisionCode(status) {
     return 1;
   }
 
-  if (normalizedStatus === 'denied') {
-    return 0;
+  if (normalizedStatus === 'observed') {
+    return 2;
+  }
+
+  if (normalizedStatus === 'rejected' || normalizedStatus === 'denied') {
+    return 3;
   }
 
   return null;
@@ -259,7 +269,12 @@ function buildManagerReviewSummary(requestRecord) {
   return {
     local_request_id: requestRecord.local_request_id || request.request_id || null,
     app_uid: requestRecord.app_uid || null,
+    app_number:
+      requestRecord.app_number ||
+      extractAppNumber(requestRecord.lurana_response) ||
+      null,
     employee: {
+      user_id: employee.userId || null,
       username: employee.userName || null,
       first_name: employee.firstName || null,
       last_name: employee.lastName || null,
@@ -285,11 +300,19 @@ function buildManagerReviewSummary(requestRecord) {
       status: review.status || 'pending',
       decision: review.decision || null,
       decision_code: decisionCode,
+      decision_display: review.decision_display || null,
+      decision_comment: review.decision_comment || null,
       decision_at: review.decision_at || null,
       decided_by: review.decided_by || null,
+      lurana_sync_status: review.lurana_sync_status || null,
+      lurana_sync_at: review.lurana_sync_at || null,
+      lurana_sync_payload: review.lurana_sync_payload || null,
+      lurana_sync_response: review.lurana_sync_response || null,
+      lurana_sync_error: review.lurana_sync_error || null,
       notification_status: review.notification_status || null,
       notified_at: review.notified_at || null,
-      notified_to: review.notified_to || null
+      notified_to: review.notified_to || null,
+      history: Array.isArray(review.history) ? review.history : []
     }
   };
 }
@@ -301,19 +324,34 @@ function buildProcessMakerDecisionPayload(requestRecord) {
     return null;
   }
 
+  const variables = [];
+
+  if (summary.manager_review.decision_code && summary.manager_review.decision) {
+    const reviewVariables = {
+      [config.luranaReviewActionVar]: summary.manager_review.decision_code,
+      [config.luranaReviewActionLabelVar]: summary.manager_review.decision
+    };
+
+    if (summary.manager_review.decision_comment && summary.manager_review.decision_code !== 1) {
+      reviewVariables[config.luranaReviewCommentVar] = summary.manager_review.decision_comment;
+    }
+
+    variables.push(reviewVariables);
+  }
+
   return {
-    local_request_id: summary.local_request_id,
-    app_uid: summary.app_uid,
-    manager_review_status: summary.manager_review.status,
-    manager_review_decision: summary.manager_review.decision,
-    manager_review_decision_code: summary.manager_review.decision_code,
-    manager_review_decision_at: summary.manager_review.decision_at,
-    manager_review_decided_by: summary.manager_review.decided_by,
-    processmaker_variables_example: {
-      managerDecision: summary.manager_review.decision_code,
-      managerDecisionLabel: summary.manager_review.decision,
-      managerDecisionAt: summary.manager_review.decision_at,
-      managerDecisionBy: summary.manager_review.decided_by
+    appUid: summary.app_uid,
+    appNumber: summary.app_number,
+    userId: summary.employee.user_id,
+    userName: summary.employee.username,
+    variables,
+    meta: {
+      local_request_id: summary.local_request_id,
+      manager_review_status: summary.manager_review.status,
+      manager_review_decision: summary.manager_review.decision,
+      manager_review_decision_code: summary.manager_review.decision_code,
+      manager_review_decision_at: summary.manager_review.decision_at,
+      manager_review_decided_by: summary.manager_review.decided_by
     }
   };
 }
@@ -564,6 +602,13 @@ app.get('/debug/last-createcase', requireDebugMode, (req, res) => {
   });
 });
 
+app.get('/debug/last-update-ptodata', requireDebugMode, (req, res) => {
+  res.json({
+    ok: true,
+    data: getLastUpdatePtoData() || buildEmptyPayload('lastUpdatePtoData')
+  });
+});
+
 app.get('/debug/last-casesquery', requireDebugMode, (req, res) => {
   res.json({
     ok: true,
@@ -638,14 +683,48 @@ app.post('/test-lurana-case', async (req, res) => {
   try {
     const data = await createPtoCase(req.body);
     const appUid = extractAppUid(data);
+    const appNumber = extractAppNumber(data);
 
     res.json({
       ok: true,
       appUid,
+      appNumber,
       data
     });
   } catch (error) {
     console.error('[TEST][LURANA_CASE] Error:', describeHttpError(error));
+    res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
+  }
+});
+
+app.post('/test-lurana-review', async (req, res) => {
+  try {
+    const data = await updatePtoData(req.body);
+
+    res.json({
+      ok: true,
+      data
+    });
+  } catch (error) {
+    console.error('[TEST][LURANA_REVIEW] Error:', describeHttpError(error));
+    res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
+  }
+});
+
+app.post('/test-manager-notification', async (req, res) => {
+  try {
+    const result = await createManagerReviewTestRequest(req.body || {});
+
+    res.json({
+      ok: true,
+      message: 'Solicitud de prueba enviada al jefe',
+      requestId: result.requestRecord?.local_request_id || null,
+      data: buildManagerReviewSummary(result.requestRecord),
+      processmakerPayload: buildProcessMakerDecisionPayload(result.requestRecord),
+      managerNotification: result.managerNotification
+    });
+  } catch (error) {
+    console.error('[TEST][MANAGER_NOTIFICATION] Error:', describeHttpError(error));
     res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
   }
 });
