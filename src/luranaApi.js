@@ -33,6 +33,77 @@ async function authHeaders(extraHeaders = {}) {
   };
 }
 
+function tryParseJsonString(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmedValue);
+  } catch (error) {
+    return null;
+  }
+}
+
+function parseEmbeddedJsonString(value) {
+  const directParse = tryParseJsonString(value);
+
+  if (directParse) {
+    return directParse;
+  }
+
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmedValue = value.trim();
+  const jsonMatch = trimmedValue.match(/(\{[\s\S]*\})\s*$/);
+
+  if (!jsonMatch?.[1]) {
+    return null;
+  }
+
+  return tryParseJsonString(jsonMatch[1]);
+}
+
+function normalizeLuranaResponseValue(value, depth = 0) {
+  if (depth > 5 || value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsedValue = parseEmbeddedJsonString(value);
+
+    if (!parsedValue) {
+      return value;
+    }
+
+    return normalizeLuranaResponseValue(parsedValue, depth + 1);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeLuranaResponseValue(item, depth + 1));
+  }
+
+  if (typeof value === 'object') {
+    const normalizedObject = {};
+
+    for (const [key, nestedValue] of Object.entries(value)) {
+      normalizedObject[key] = normalizeLuranaResponseValue(nestedValue, depth + 1);
+    }
+
+    return normalizedObject;
+  }
+
+  return value;
+}
+
 function collectAppUidCandidates(value, depth = 0, found = []) {
   if (!value || depth > 5) {
     return found;
@@ -46,6 +117,24 @@ function collectAppUidCandidates(value, depth = 0, found = []) {
     return found;
   }
 
+  if (typeof value === 'string') {
+    const parsedValue = parseEmbeddedJsonString(value);
+
+    if (parsedValue) {
+      collectAppUidCandidates(parsedValue, depth + 1, found);
+    }
+
+    const inlineMatch = value.match(
+      /"(?:app_uid|appuid|caseuid|case_uid|caseid)"\s*:\s*"([^"]+)"/i
+    );
+
+    if (inlineMatch?.[1]) {
+      found.push(inlineMatch[1].trim());
+    }
+
+    return found;
+  }
+
   if (typeof value !== 'object') {
     return found;
   }
@@ -54,7 +143,7 @@ function collectAppUidCandidates(value, depth = 0, found = []) {
     const normalizedKey = key.toLowerCase();
 
     if (
-      ['app_uid', 'appuid', 'caseuid', 'case_uid'].includes(normalizedKey) &&
+      ['app_uid', 'appuid', 'caseuid', 'case_uid', 'caseid'].includes(normalizedKey) &&
       typeof nestedValue === 'string' &&
       nestedValue.trim()
     ) {
@@ -80,6 +169,24 @@ function collectAppNumberCandidates(value, depth = 0, found = []) {
   if (Array.isArray(value)) {
     for (const item of value) {
       collectAppNumberCandidates(item, depth + 1, found);
+    }
+
+    return found;
+  }
+
+  if (typeof value === 'string') {
+    const parsedValue = parseEmbeddedJsonString(value);
+
+    if (parsedValue) {
+      collectAppNumberCandidates(parsedValue, depth + 1, found);
+    }
+
+    const inlineMatch = value.match(
+      /"(?:app_number|appnumber|casenumber|case_number)"\s*:\s*"?([^",}]+)"?/i
+    );
+
+    if (inlineMatch?.[1]) {
+      found.push(String(inlineMatch[1]).trim());
     }
 
     return found;
@@ -304,29 +411,35 @@ async function createPtoCase(payload) {
       timeout: 20000,
       maxRedirects: 0
     });
+    const normalizedResponse = normalizeLuranaResponseValue(response.data);
 
     const extractedAppUid =
-      response.data?.app_uid ||
-      response.data?.data?.app_uid ||
-      response.data?.appUid ||
-      response.data?.data?.appUid ||
-      response.data?.caseUid ||
-      response.data?.data?.caseUid ||
+      normalizedResponse?.app_uid ||
+      normalizedResponse?.data?.app_uid ||
+      normalizedResponse?.appUid ||
+      normalizedResponse?.data?.appUid ||
+      normalizedResponse?.caseUid ||
+      normalizedResponse?.data?.caseUid ||
+      normalizedResponse?.caseId ||
+      normalizedResponse?.data?.caseId ||
+      extractAppUid(normalizedResponse) ||
       extractAppUid(response.data) ||
       null;
     const extractedAppNumber =
-      response.data?.app_number ||
-      response.data?.data?.app_number ||
-      response.data?.appNumber ||
-      response.data?.data?.appNumber ||
-      response.data?.caseNumber ||
-      response.data?.data?.caseNumber ||
+      normalizedResponse?.app_number ||
+      normalizedResponse?.data?.app_number ||
+      normalizedResponse?.appNumber ||
+      normalizedResponse?.data?.appNumber ||
+      normalizedResponse?.caseNumber ||
+      normalizedResponse?.data?.caseNumber ||
+      extractAppNumber(normalizedResponse) ||
       extractAppNumber(response.data) ||
       null;
 
     setLastCreateCase({
       payload,
       response: response.data,
+      normalizedResponse,
       error: null,
       extractedAppUid,
       extractedAppNumber

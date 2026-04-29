@@ -273,6 +273,10 @@ function buildEmptyPayload(label) {
   };
 }
 
+function isTruthyFlag(value) {
+  return ['1', 'true', 'yes', 'si', 'on'].includes(String(value || '').trim().toLowerCase());
+}
+
 function getManagerDecisionCode(status) {
   const normalizedStatus = String(status || '').trim().toLowerCase();
 
@@ -788,12 +792,34 @@ app.post('/test-lurana-case', async (req, res) => {
     const data = await createPtoCase(req.body);
     const appUid = extractAppUid(data);
     const appNumber = extractAppNumber(data);
+    const shouldNotifyManager =
+      isTruthyFlag(req.query.notifyManager) ||
+      isTruthyFlag(req.body?.notifyManager) ||
+      isTruthyFlag(req.body?.notify_manager);
+    let managerReview = null;
+
+    if (shouldNotifyManager) {
+      const result = await createManagerReviewRequestFromProcessmaker({
+        ...req.body,
+        appUid: appUid || req.body?.appUid || req.body?.app_uid || '',
+        appNumber: appNumber || req.body?.appNumber || req.body?.app_number || '',
+        lurana_response: data
+      });
+
+      managerReview = {
+        requestId: result.requestRecord?.local_request_id || null,
+        data: buildManagerReviewSummary(result.requestRecord),
+        processmakerPayload: buildProcessMakerDecisionPayload(result.requestRecord),
+        managerNotification: result.managerNotification
+      };
+    }
 
     res.json({
       ok: true,
       appUid,
       appNumber,
-      data
+      data,
+      managerReview
     });
   } catch (error) {
     console.error('[TEST][LURANA_CASE] Error:', describeHttpError(error));

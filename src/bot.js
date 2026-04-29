@@ -834,6 +834,7 @@ function buildManagerRequestSummary(requestRecord) {
   const requestType = getRequestTypeOption(request);
   const timeUnit = getTimeUnitOption(request);
   const permissionType = getPermissionTypeOption(request);
+  const appNumber = requestRecord?.app_number || extractAppNumber(requestRecord?.lurana_response) || '';
   const certificateStatus = request.certMedMediaId
     ? `Adjuntado${request.certMedFilename ? `: ${request.certMedFilename}` : ''}`
     : 'No adjuntado';
@@ -841,7 +842,7 @@ function buildManagerRequestSummary(requestRecord) {
     'Nueva solicitud para revision',
     '',
     `Caso: ${requestRecord?.app_uid || 'Pendiente'}`,
-    `Nro. caso: ${requestRecord?.app_number || 'Pendiente'}`,
+    `Nro. caso: ${appNumber || 'Pendiente'}`,
     `Solicitud: ${requestRecord?.local_request_id || request.request_id || 'Sin id'}`,
     `Empleado: ${getEmployeeFullName(employee)}`,
     `Telefono: ${requestRecord?.phone || ''}`,
@@ -948,11 +949,102 @@ function getManagerHistoryRequests() {
   });
 }
 
+function getEmployeeFieldValue(employee, candidateKeys = []) {
+  for (const key of candidateKeys) {
+    const value = employee?.[key];
+
+    if (value === null || value === undefined) {
+      continue;
+    }
+
+    if (typeof value === 'number') {
+      return value;
+    }
+
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    const normalizedValue = normalizeText(value);
+
+    if (normalizedValue) {
+      return normalizedValue;
+    }
+  }
+
+  return '';
+}
+
 function buildCreateCasePayload(employee, request) {
   const requestType = getRequestTypeOption(request);
   const timeUnit = getTimeUnitOption(request);
   const permissionType = getPermissionTypeOption(request);
   const hasCertificate = Boolean(request.certMedMediaId);
+  const payloadReason = buildPayloadReason(request);
+  const requesterComment = normalizeText(request.reason);
+  const department = getEmployeeFieldValue(employee, [
+    'var_area',
+    'department',
+    'departmentId',
+    'department_id',
+    'area',
+    'areaId',
+    'area_id',
+    'dep_id'
+  ]);
+  const departmentLabel = getEmployeeFieldValue(employee, [
+    'var_area_label',
+    'departmentLabel',
+    'department_label',
+    'areaLabel',
+    'area_label'
+  ]);
+  const position = getEmployeeFieldValue(employee, [
+    'var_position',
+    'position',
+    'positionId',
+    'position_id',
+    'jobPosition',
+    'job_position'
+  ]);
+  const positionLabel = getEmployeeFieldValue(employee, [
+    'var_position_label',
+    'positionLabel',
+    'position_label',
+    'jobPositionLabel',
+    'job_position_label'
+  ]);
+  const contractType = getEmployeeFieldValue(employee, [
+    'var_contract_type',
+    'contractType',
+    'contract_type',
+    'employmentType',
+    'employment_type'
+  ]);
+  const contractTypeLabel = getEmployeeFieldValue(employee, [
+    'var_contract_type_label',
+    'contractTypeLabel',
+    'contract_type_label',
+    'employmentTypeLabel',
+    'employment_type_label'
+  ]);
+  const uidManager = getEmployeeFieldValue(employee, [
+    'uidManager',
+    'uid_manager',
+    'managerUid',
+    'manager_uid',
+    'var_area_director',
+    'areaDirector',
+    'area_director'
+  ]);
+  const idManager = getEmployeeFieldValue(employee, [
+    'idManager',
+    'id_manager',
+    'managerId',
+    'manager_id',
+    'supervisorId',
+    'supervisor_id'
+  ]);
 
   return {
     pro_uid: config.luranaProUid,
@@ -964,15 +1056,28 @@ function buildCreateCasePayload(employee, request) {
         firstName: employee.firstName || employee.userName || '',
         lastName: employee.lastName || '',
         email: employee.email || '',
+        department,
+        departmentLabel,
+        position,
+        positionLabel,
+        contractType,
+        contractTypeLabel,
+        uidManager,
+        idManager,
         typeRequest: requestType.code,
         typeRequestLabel: request.typeRequestLabel || requestType.label,
         daysHours: timeUnit.code,
         daysHoursLabel: request.timeUnitLabel || timeUnit.label,
         typePermission: isVacationRequest(request) ? '' : String(permissionType?.code || PERMISSION_TYPE_OPTIONS[0].code),
         typePermissionLabel: isVacationRequest(request) ? '' : (request.typePermissionLabel || permissionType?.label || ''),
-        reason: buildPayloadReason(request),
+        reason: payloadReason,
+        requesterComment,
         startDate: request.startDate,
         endDate: request.endDate || request.startDate,
+        startHour: request.startTime || '',
+        endHour: request.endTime || '',
+        daysRequested: isHoursRequest(request) ? 0 : Number(request.requestedDays || 0),
+        hourRequested: isHoursRequest(request) ? Number(request.requestedDays || 0) : 0,
         certMedAttached: hasCertificate ? '1' : '0',
         certMedFilename: request.certMedFilename || '',
         certMedMimeType: request.certMedMimeType || '',
@@ -989,6 +1094,14 @@ function buildTestEmployeePayload(rawEmployee = {}, fallbackPhone = '') {
     firstName: normalizeText(rawEmployee.firstName || 'Prueba'),
     lastName: normalizeText(rawEmployee.lastName || 'Colaborador'),
     email: normalizeText(rawEmployee.email || 'prueba.bot@luranasoft.local'),
+    department: rawEmployee.department ?? rawEmployee.var_area ?? '',
+    departmentLabel: normalizeText(rawEmployee.departmentLabel || rawEmployee.var_area_label || ''),
+    position: rawEmployee.position ?? rawEmployee.var_position ?? '',
+    positionLabel: normalizeText(rawEmployee.positionLabel || rawEmployee.var_position_label || ''),
+    contractType: rawEmployee.contractType ?? rawEmployee.var_contract_type ?? '',
+    contractTypeLabel: normalizeText(rawEmployee.contractTypeLabel || rawEmployee.var_contract_type_label || ''),
+    uidManager: normalizeText(rawEmployee.uidManager || rawEmployee.var_area_director || ''),
+    idManager: normalizeText(rawEmployee.idManager || ''),
     phone: normalizePhoneNumber(
       rawEmployee.phone || fallbackPhone || getManagerNotificationPhone(),
       config.defaultCountryCode
@@ -1167,6 +1280,66 @@ function buildEmployeePayloadFromProcessmaker(payload = {}) {
       variables.mail ||
       payload.email ||
       payload.mail ||
+      ''
+    ),
+    department:
+      variables.var_area ??
+      variables.department ??
+      variables.department_id ??
+      payload.department ??
+      payload.department_id ??
+      '',
+    departmentLabel: normalizeText(
+      variables.var_area_label ||
+      variables.departmentLabel ||
+      variables.department_label ||
+      payload.departmentLabel ||
+      payload.department_label ||
+      ''
+    ),
+    position:
+      variables.var_position ??
+      variables.position ??
+      variables.position_id ??
+      payload.position ??
+      payload.position_id ??
+      '',
+    positionLabel: normalizeText(
+      variables.var_position_label ||
+      variables.positionLabel ||
+      variables.position_label ||
+      payload.positionLabel ||
+      payload.position_label ||
+      ''
+    ),
+    contractType:
+      variables.var_contract_type ??
+      variables.contractType ??
+      variables.contract_type ??
+      payload.contractType ??
+      payload.contract_type ??
+      '',
+    contractTypeLabel: normalizeText(
+      variables.var_contract_type_label ||
+      variables.contractTypeLabel ||
+      variables.contract_type_label ||
+      payload.contractTypeLabel ||
+      payload.contract_type_label ||
+      ''
+    ),
+    uidManager: normalizeText(
+      variables.var_area_director ||
+      variables.uidManager ||
+      variables.uid_manager ||
+      payload.uidManager ||
+      payload.uid_manager ||
+      ''
+    ),
+    idManager: normalizeText(
+      variables.idManager ||
+      variables.id_manager ||
+      payload.idManager ||
+      payload.id_manager ||
       ''
     ),
     phone: resolveProcessmakerEmployeePhone(payload, variables)
