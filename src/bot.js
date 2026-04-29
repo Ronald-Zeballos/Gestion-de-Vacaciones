@@ -1047,6 +1047,278 @@ function buildTestRequestPayload(rawRequest = {}, fallbackRequestId = '') {
   return request;
 }
 
+function getProcessmakerVariables(payload = {}) {
+  if (Array.isArray(payload?.variables) && payload.variables.length > 0) {
+    return payload.variables[0] || {};
+  }
+
+  if (payload?.variables && typeof payload.variables === 'object') {
+    return payload.variables;
+  }
+
+  if (Array.isArray(payload?.data?.variables) && payload.data.variables.length > 0) {
+    return payload.data.variables[0] || {};
+  }
+
+  if (payload?.data?.variables && typeof payload.data.variables === 'object') {
+    return payload.data.variables;
+  }
+
+  if (payload?.data && typeof payload.data === 'object') {
+    return payload.data;
+  }
+
+  return payload && typeof payload === 'object' ? payload : {};
+}
+
+function resolveProcessmakerRequestTypeCode(variables) {
+  return Number(
+    variables.var_type_request ||
+    variables.typeRequest ||
+    variables.type_request ||
+    variables.requestType ||
+    variables.request_type ||
+    1
+  ) || 1;
+}
+
+function resolveProcessmakerTimeUnitCode(variables) {
+  return Number(
+    variables.var_days_hours ||
+    variables.daysHours ||
+    variables.days_hours ||
+    variables.timeUnitCode ||
+    variables.time_unit_code ||
+    variables.requestUnit ||
+    1
+  ) || 1;
+}
+
+function resolveProcessmakerPermissionCode(variables) {
+  return Number(
+    variables.var_type_permission ||
+    variables.typePermission ||
+    variables.type_permission ||
+    variables.permissionType ||
+    variables.permission_type ||
+    0
+  ) || 0;
+}
+
+function resolveProcessmakerEmployeePhone(payload, variables) {
+  const candidates = [
+    ...collectEmployeePhoneCandidates(variables),
+    ...collectEmployeePhoneCandidates(payload)
+  ];
+
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizePhoneNumber(candidate, config.defaultCountryCode);
+
+    if (normalizedCandidate) {
+      return normalizedCandidate;
+    }
+  }
+
+  return '';
+}
+
+function buildEmployeePayloadFromProcessmaker(payload = {}) {
+  const variables = getProcessmakerVariables(payload);
+  return {
+    userId: normalizeText(
+      variables.var_user_id ||
+      variables.userId ||
+      variables.user_id ||
+      payload.userId ||
+      payload.user_id ||
+      ''
+    ),
+    userName: normalizeText(
+      variables.var_user_name ||
+      variables.userName ||
+      variables.user_name ||
+      variables.username ||
+      payload.userName ||
+      payload.user_name ||
+      payload.username ||
+      ''
+    ),
+    firstName: normalizeText(
+      variables.var_firstname ||
+      variables.firstName ||
+      variables.first_name ||
+      variables.firstname ||
+      payload.firstName ||
+      payload.first_name ||
+      ''
+    ),
+    lastName: normalizeText(
+      variables.var_lastname ||
+      variables.lastName ||
+      variables.last_name ||
+      variables.lastname ||
+      payload.lastName ||
+      payload.last_name ||
+      ''
+    ),
+    email: normalizeText(
+      variables.var_mail ||
+      variables.email ||
+      variables.mail ||
+      payload.email ||
+      payload.mail ||
+      ''
+    ),
+    phone: resolveProcessmakerEmployeePhone(payload, variables)
+  };
+}
+
+function buildRequestPayloadFromProcessmaker(payload = {}, fallbackRequestId = '') {
+  const variables = getProcessmakerVariables(payload);
+  const requestTypeCode = resolveProcessmakerRequestTypeCode(variables);
+  const timeUnitCode = resolveProcessmakerTimeUnitCode(variables);
+  const requestType = findOptionByCode(REQUEST_TYPE_OPTIONS, requestTypeCode) || REQUEST_TYPE_OPTIONS[0];
+  const timeUnit = findOptionByCode(TIME_UNIT_OPTIONS, timeUnitCode) || TIME_UNIT_OPTIONS[0];
+  const isVacation = requestType.code === REQUEST_TYPE_OPTIONS[0].code;
+  const permissionTypeCode = isVacation ? 0 : resolveProcessmakerPermissionCode(variables);
+  const permissionType = findOptionByCode(PERMISSION_TYPE_OPTIONS, permissionTypeCode) || PERMISSION_TYPE_OPTIONS[0];
+  const request = {
+    ...createEmptyRequest()
+  };
+
+  request.request_id = normalizeText(
+    payload.local_request_id ||
+    payload.requestId ||
+    payload.request_id ||
+    fallbackRequestId ||
+    uuidv4()
+  );
+  request.typeRequestCode = requestType.code;
+  request.typeRequestLabel = normalizeText(
+    variables.var_type_request_label ||
+    variables.typeRequestLabel ||
+    variables.type_request_label ||
+    requestType.label
+  );
+  request.timeUnitCode = timeUnit.code;
+  request.timeUnitLabel = normalizeText(
+    variables.var_days_hours_label ||
+    variables.daysHoursLabel ||
+    variables.days_hours_label ||
+    variables.timeUnitLabel ||
+    variables.time_unit_label ||
+    timeUnit.label
+  );
+  request.typePermissionCode = isVacation ? 0 : permissionType.code;
+  request.typePermissionLabel = isVacation
+    ? 'No aplica'
+    : normalizeText(
+      variables.var_type_permission_label ||
+      variables.typePermissionLabel ||
+      variables.type_permission_label ||
+      permissionType.label
+    );
+  request.startDate = normalizeText(
+    variables.var_start_date ||
+    variables.startDate ||
+    variables.start_date ||
+    payload.startDate ||
+    payload.start_date ||
+    todayDate()
+  );
+  request.endDate = normalizeText(
+    variables.var_end_date ||
+    variables.endDate ||
+    variables.end_date ||
+    payload.endDate ||
+    payload.end_date ||
+    request.startDate
+  );
+  request.startTime = normalizeText(
+    variables.var_start_hour ||
+    variables.startTime ||
+    variables.start_time ||
+    payload.startTime ||
+    payload.start_time ||
+    ''
+  );
+  request.endTime = normalizeText(
+    variables.var_end_hour ||
+    variables.endTime ||
+    variables.end_time ||
+    payload.endTime ||
+    payload.end_time ||
+    ''
+  );
+  request.reason = normalizeText(
+    variables.var_requester_comment ||
+    variables.var_reason ||
+    variables.reason ||
+    variables.comments ||
+    variables.comment ||
+    payload.reason ||
+    payload.comments ||
+    'Solicitud recibida desde trigger de Lurana'
+  );
+  request.certMedMediaId = normalizeText(
+    variables.var_cert_med_media_id ||
+    variables.certMedMediaId ||
+    variables.cert_med_media_id ||
+    payload.certMedMediaId ||
+    ''
+  );
+  request.certMedMimeType = normalizeText(
+    variables.var_cert_med_mime_type ||
+    variables.certMedMimeType ||
+    variables.cert_med_mime_type ||
+    payload.certMedMimeType ||
+    ''
+  );
+  request.certMedFilename = normalizeText(
+    variables.var_cert_med_filename ||
+    variables.certMedFilename ||
+    variables.cert_med_filename ||
+    payload.certMedFilename ||
+    ''
+  );
+  clearDateSelectionState(request);
+  clearTimeSelectionState(request);
+
+  if (timeUnit.code === TIME_UNIT_OPTIONS[1].code) {
+    request.endDate = request.startDate;
+    request.requestedDays = Number(
+      variables.var_hour_requested ||
+      variables.requestedDays ||
+      variables.requested_days ||
+      variables.requestedHours ||
+      variables.requested_hours ||
+      payload.requestedDays ||
+      payload.requestedHours ||
+      0
+    ) || calculateRequestedHours(request.startTime || '09:00', request.endTime || '11:00');
+
+    if (!request.startTime) {
+      request.startTime = '09:00';
+    }
+
+    if (!request.endTime) {
+      request.endTime = '11:00';
+    }
+  } else {
+    request.startTime = '';
+    request.endTime = '';
+    request.requestedDays = Number(
+      variables.var_days_requested ||
+      variables.requestedDays ||
+      variables.requested_days ||
+      payload.requestedDays ||
+      0
+    ) || calculateWorkingDays(request.startDate, request.endDate);
+  }
+
+  return request;
+}
+
 function buildCertificatePrompt() {
   return [
     'Adjunta tu certificado medico como documento o imagen de WhatsApp.',
@@ -1726,6 +1998,84 @@ async function createManagerReviewTestRequest(input = {}) {
     employee,
     request,
     lurana_payload: input.lurana_payload || null,
+    lurana_response: input.lurana_response || null,
+    cert_med_result: null,
+    cert_med_error: null,
+    manager_review: {
+      status: 'pending',
+      decision: '',
+      decision_at: '',
+      decided_by: '',
+      decision_message_id: '',
+      decision_code: null,
+      decision_comment: '',
+      decision_display: '',
+      pending_action: '',
+      pending_comment_from: '',
+      pending_comment_requested_at: '',
+      pending_comment_message_id: '',
+      notification_status: 'pending',
+      notified_at: '',
+      notified_to: getManagerNotificationPhone(),
+      notification_error: null,
+      lurana_sync_status: 'pending',
+      lurana_sync_at: '',
+      lurana_sync_payload: null,
+      lurana_sync_response: null,
+      lurana_sync_error: null,
+      history: []
+    }
+  };
+
+  saveRequest(localRequestId, requestRecord);
+
+  const managerNotification = await notifyManagerAboutRequest(requestRecord);
+  const storedRecord = getRequest(localRequestId) || requestRecord;
+
+  return {
+    requestRecord: storedRecord,
+    managerNotification
+  };
+}
+
+async function createManagerReviewRequestFromProcessmaker(input = {}) {
+  const appUid = normalizeText(
+    input.appUid ||
+    input.app_uid ||
+    input.act_uid ||
+    input.application ||
+    input.caseUid ||
+    input.case_uid ||
+    extractAppUid(input) ||
+    ''
+  );
+  const appNumber = normalizeText(
+    input.appNumber ||
+    input.app_number ||
+    input.APP_NUMBER ||
+    input.caseNumber ||
+    input.case_number ||
+    extractAppNumber(input) ||
+    ''
+  );
+  const localRequestId = normalizeText(
+    input.local_request_id ||
+    input.requestId ||
+    input.request_id ||
+    appUid ||
+    (appNumber ? `pm-${appNumber}` : '') ||
+    uuidv4()
+  );
+  const employee = buildEmployeePayloadFromProcessmaker(input);
+  const request = buildRequestPayloadFromProcessmaker(input, localRequestId);
+  const requestRecord = {
+    local_request_id: localRequestId,
+    phone: employee.phone || '',
+    app_uid: appUid || null,
+    app_number: appNumber || null,
+    employee,
+    request,
+    lurana_payload: input,
     lurana_response: input.lurana_response || null,
     cert_med_result: null,
     cert_med_error: null,
@@ -2950,5 +3300,6 @@ async function processMessage(message) {
 
 module.exports = {
   processMessage,
-  createManagerReviewTestRequest
+  createManagerReviewTestRequest,
+  createManagerReviewRequestFromProcessmaker
 };

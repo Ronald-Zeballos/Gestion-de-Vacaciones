@@ -8,7 +8,11 @@ const {
   getRequest,
   findRequestByAppUid
 } = require('./storage');
-const { processMessage, createManagerReviewTestRequest } = require('./bot');
+const {
+  processMessage,
+  createManagerReviewTestRequest,
+  createManagerReviewRequestFromProcessmaker
+} = require('./bot');
 const {
   getUserData,
   getUserDataByPhone,
@@ -25,10 +29,12 @@ const {
   getLastUserLookup,
   getLastCreateCase,
   getLastUpdatePtoData,
+  getLastProcessmakerTrigger,
   getLastCasesQuery,
   getLastMedia,
   getLastIncoming,
   setLastIncoming,
+  setLastProcessmakerTrigger,
   clear
 } = require('./debugStore');
 
@@ -171,6 +177,34 @@ function requireDebugMode(req, res, next) {
   return next();
 }
 
+function getProcessmakerTriggerTokenFromRequest(req) {
+  return String(
+    req.headers['x-trigger-token'] ||
+    req.headers['x-processmaker-token'] ||
+    req.query.token ||
+    req.body?.token ||
+    ''
+  ).trim();
+}
+
+function requireProcessmakerTriggerToken(req, res, next) {
+  if (!config.processmakerTriggerToken) {
+    return next();
+  }
+
+  const providedToken = getProcessmakerTriggerTokenFromRequest(req);
+
+  if (providedToken && providedToken === config.processmakerTriggerToken) {
+    return next();
+  }
+
+  return res.status(403).json({
+    error: {
+      message: 'Invalid trigger token'
+    }
+  });
+}
+
 function listRegisteredRoutes() {
   const stack = app?._router?.stack || [];
   const routes = [];
@@ -212,6 +246,7 @@ function buildDebugEnvPayload() {
     DEBUG_MODE: process.env.DEBUG_MODE || '',
     NODE_ENV: process.env.NODE_ENV || '',
     PORT: process.env.PORT || '',
+    PROCESSMAKER_TRIGGER_TOKEN: maskValue(config.processmakerTriggerToken),
     LURANA_API_BASE_URL: config.luranaApiBaseUrl,
     LURANA_WORKSPACE: config.luranaWorkspace,
     LURANA_PRO_UID: config.luranaProUid,
@@ -517,6 +552,68 @@ app.get('/manager-review/case/:appUid/processmaker-payload', (req, res) => {
   });
 });
 
+app.all('/processmaker/trigger-ping', requireProcessmakerTriggerToken, (req, res) => {
+  const payload = {
+    method: req.method,
+    query: req.query || {},
+    body: req.body || {},
+    headers: {
+      'x-trigger-token': req.headers['x-trigger-token'] ? 'provided' : '',
+      'x-processmaker-token': req.headers['x-processmaker-token'] ? 'provided' : ''
+    }
+  };
+
+  setLastProcessmakerTrigger({
+    type: 'ping',
+    payload,
+    result: {
+      ok: true
+    }
+  });
+
+  return res.json({
+    ok: true,
+    message: 'Trigger ping recibido correctamente',
+    receivedAt: new Date().toISOString(),
+    payload
+  });
+});
+
+app.post('/processmaker/manager-review', requireProcessmakerTriggerToken, async (req, res) => {
+  const requestPayload = req.body || {};
+
+  try {
+    const result = await createManagerReviewRequestFromProcessmaker(requestPayload);
+    const responsePayload = {
+      ok: true,
+      message: 'Solicitud recibida desde ProcessMaker y enviada al jefe',
+      requestId: result.requestRecord?.local_request_id || null,
+      data: buildManagerReviewSummary(result.requestRecord),
+      processmakerPayload: buildProcessMakerDecisionPayload(result.requestRecord),
+      managerNotification: result.managerNotification
+    };
+
+    setLastProcessmakerTrigger({
+      type: 'manager-review',
+      payload: requestPayload,
+      result: responsePayload
+    });
+
+    return res.json(responsePayload);
+  } catch (error) {
+    const detail = buildErrorResponse(error);
+
+    setLastProcessmakerTrigger({
+      type: 'manager-review',
+      payload: requestPayload,
+      error: detail.error
+    });
+
+    console.error('[PROCESSMAKER][MANAGER_REVIEW] Error:', describeHttpError(error));
+    return res.status(getHttpStatusFromError(error)).json(detail);
+  }
+});
+
 app.get('/test-lurana-user/:username', async (req, res) => {
   try {
     const data = await getUserData(req.params.username);
@@ -606,6 +703,13 @@ app.get('/debug/last-update-ptodata', requireDebugMode, (req, res) => {
   res.json({
     ok: true,
     data: getLastUpdatePtoData() || buildEmptyPayload('lastUpdatePtoData')
+  });
+});
+
+app.get('/debug/last-processmaker-trigger', requireDebugMode, (req, res) => {
+  res.json({
+    ok: true,
+    data: getLastProcessmakerTrigger() || buildEmptyPayload('lastProcessmakerTrigger')
   });
 });
 

@@ -2,6 +2,7 @@ const store = {
   lastUserLookup: null,
   lastCreateCase: null,
   lastUpdatePtoData: null,
+  lastProcessmakerTrigger: null,
   lastCasesQuery: null,
   lastMedia: null,
   lastIncoming: null
@@ -41,6 +42,15 @@ function getLastUpdatePtoData() {
   return store.lastUpdatePtoData;
 }
 
+function setLastProcessmakerTrigger(data) {
+  store.lastProcessmakerTrigger = buildEntry(data);
+  return store.lastProcessmakerTrigger;
+}
+
+function getLastProcessmakerTrigger() {
+  return store.lastProcessmakerTrigger;
+}
+
 function setLastCasesQuery(data) {
   store.lastCasesQuery = buildEntry(data);
   return store.lastCasesQuery;
@@ -72,6 +82,7 @@ function clear() {
   store.lastUserLookup = null;
   store.lastCreateCase = null;
   store.lastUpdatePtoData = null;
+  store.lastProcessmakerTrigger = null;
   store.lastCasesQuery = null;
   store.lastMedia = null;
   store.lastIncoming = null;
@@ -84,6 +95,8 @@ module.exports = {
   getLastCreateCase,
   setLastUpdatePtoData,
   getLastUpdatePtoData,
+  setLastProcessmakerTrigger,
+  getLastProcessmakerTrigger,
   setLastCasesQuery,
   getLastCasesQuery,
   setLastMedia,

@@ -15,13 +15,15 @@
 - [ ] Probar conectividad: `node test-trigger-prod.js`
 
 ### Paso 3: Desplegar trigger en ProcessMaker
-- [ ] Copiar contenido de `trigger-simple.php`
+- [ ] Copiar contenido de `trigger-simple.php` para validar conectividad
+- [ ] Copiar contenido de `trigger-manager-review.php` para enviar la solicitud al jefe
 - [ ] En ProcessMaker:
   1. Task → Triggers → New
   2. Seleccionar: "After Dynaform Submit"
   3. Pegar código del trigger
   4. Guardar
 - [ ] Verificar URL en el trigger: `https://proservices.luranasoft.com:3000/processmaker/trigger-ping`
+- [ ] Verificar URL del trigger real: `https://proservices.luranasoft.com:3000/processmaker/manager-review`
 
 ### Paso 4: Verificar funcionamiento
 - [ ] En ProcessMaker, llenar un dynaform
@@ -54,6 +56,7 @@ node test-trigger-prod.js
 | ProcessMaker | https://proservices.luranasoft.com/syspasantia/en/lurana/processes/main |
 | Node.js (Prod) | https://proservices.luranasoft.com:3000 |
 | Trigger Endpoint | https://proservices.luranasoft.com:3000/processmaker/trigger-ping |
+| Trigger Review Endpoint | https://proservices.luranasoft.com:3000/processmaker/manager-review |
 
 ---
 

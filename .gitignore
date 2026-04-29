@@ -1,3 +1,5 @@
 node_modules/
 .env
 package-lock.json
+trigger-simple.php
+trigger-manager-review.php

@@ -16,6 +16,7 @@ module.exports = {
   defaultCountryCode: process.env.DEFAULT_COUNTRY_CODE || '591',
   baseUrl: process.env.BASE_URL || '',
   tempDir: process.env.TMP_DIR || '/tmp',
+  processmakerTriggerToken: process.env.PROCESSMAKER_TRIGGER_TOKEN || '',
 
   luranaTokenUrl: process.env.LURANA_TOKEN_URL || '',
   luranaClientId: process.env.LURANA_CLIENT_ID || '',
