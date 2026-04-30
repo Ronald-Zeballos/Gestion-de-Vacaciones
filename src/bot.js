@@ -45,6 +45,7 @@ const {
 } = require('./utils');
 const {
   getUserData,
+  getUserDataByUsernameAndPhone,
   getUserDataByPhone,
   createPtoCase,
   updatePtoData,
@@ -83,9 +84,25 @@ const EMPLOYEE_PHONE_KEY_TOKENS = [
   'celular',
   'whatsapp'
 ];
+const MANAGER_ROLE_KEY_TOKENS = [
+  'manager',
+  'reviewer',
+  'director',
+  'supervisor',
+  'approver',
+  'jefe',
+  'areadirector'
+];
+const MANAGER_USERNAME_KEY_TOKENS = [
+  'username',
+  'usrusername',
+  'login',
+  'user'
+];
 const MANAGER_PANEL_BUTTON_ID = 'manager_center';
 const MANAGER_PENDING_BUTTON_ID = 'manager_pending';
 const MANAGER_HISTORY_BUTTON_ID = 'manager_history';
+const managerPhoneLookupCache = new Map();
 
 function isValidCertificateFile(mimeType, filename) {
   // Si no hay ni mimeType ni filename, rechazar
@@ -282,6 +299,99 @@ function resolveEmployeePhoneCandidates(rawEmployee) {
 function resolveEmployeePhone(rawEmployee) {
   const employeePhoneCandidates = resolveEmployeePhoneCandidates(rawEmployee);
   return employeePhoneCandidates[0] || '';
+}
+
+function collectManagerPhoneCandidates(value, depth = 0, found = []) {
+  if (!value || depth > 4) {
+    return found;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectManagerPhoneCandidates(item, depth + 1, found);
+    }
+
+    return found;
+  }
+
+  if (typeof value !== 'object') {
+    return found;
+  }
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = normalizeLookupKey(key);
+    const hasManagerRole = MANAGER_ROLE_KEY_TOKENS.some((token) => normalizedKey.includes(token));
+    const hasPhoneLikeToken = EMPLOYEE_PHONE_KEY_TOKENS.some((token) => normalizedKey.includes(token));
+
+    if (
+      hasManagerRole &&
+      hasPhoneLikeToken &&
+      (typeof nestedValue === 'string' || typeof nestedValue === 'number')
+    ) {
+      found.push(String(nestedValue));
+    }
+
+    collectManagerPhoneCandidates(nestedValue, depth + 1, found);
+  }
+
+  return found;
+}
+
+function collectManagerUsernameCandidates(value, depth = 0, found = []) {
+  if (!value || depth > 4) {
+    return found;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectManagerUsernameCandidates(item, depth + 1, found);
+    }
+
+    return found;
+  }
+
+  if (typeof value !== 'object') {
+    return found;
+  }
+
+  for (const [key, nestedValue] of Object.entries(value)) {
+    const normalizedKey = normalizeLookupKey(key);
+    const hasManagerRole = MANAGER_ROLE_KEY_TOKENS.some((token) => normalizedKey.includes(token));
+    const hasUsernameLikeToken = MANAGER_USERNAME_KEY_TOKENS.some((token) => normalizedKey.includes(token));
+
+    if (
+      hasManagerRole &&
+      hasUsernameLikeToken &&
+      (typeof nestedValue === 'string' || typeof nestedValue === 'number')
+    ) {
+      found.push(String(nestedValue));
+    }
+
+    collectManagerUsernameCandidates(nestedValue, depth + 1, found);
+  }
+
+  return found;
+}
+
+function parseUsernameFromLabel(value) {
+  const normalizedValue = normalizeText(value);
+
+  if (!normalizedValue) {
+    return '';
+  }
+
+  if (/^[a-z0-9._-]+$/i.test(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  const tokens = normalizedValue.split(/\s+/).filter(Boolean);
+  const lastToken = tokens[tokens.length - 1] || '';
+
+  if (/^[a-z0-9._-]+$/i.test(lastToken)) {
+    return lastToken;
+  }
+
+  return '';
 }
 
 function resolveEmployeeUserName(rawEmployee, requestedUsername = '') {
@@ -599,18 +709,248 @@ function limitMessageLength(value, maxLength = 900) {
   return `${normalizedValue.slice(0, maxLength - 3)}...`;
 }
 
-function getManagerNotificationPhone() {
+function getDefaultManagerNotificationPhone() {
   return normalizePhoneNumber(config.managerNotificationNumber, config.defaultCountryCode);
 }
 
-function isManagerPhone(phone) {
-  const managerPhone = getManagerNotificationPhone();
+function resolveManagerPhonesFromRecord(requestRecord) {
+  const sources = [
+    requestRecord?.employee || {},
+    requestRecord?.request || {},
+    requestRecord?.lurana_payload || {},
+    requestRecord || {}
+  ];
+  const explicitCandidates = [
+    requestRecord?.manager_review?.notified_to,
+    requestRecord?.employee?.managerPhone,
+    requestRecord?.employee?.manager_phone,
+    requestRecord?.employee?.reviewerPhone,
+    requestRecord?.employee?.reviewer_phone,
+    requestRecord?.employee?.directorPhone,
+    requestRecord?.employee?.director_phone,
+    requestRecord?.employee?.areaDirectorPhone,
+    requestRecord?.employee?.area_director_phone,
+    requestRecord?.employee?.supervisorPhone,
+    requestRecord?.employee?.supervisor_phone,
+    requestRecord?.employee?.var_manager_phone,
+    requestRecord?.employee?.var_reviewer_phone,
+    requestRecord?.employee?.var_director_phone,
+    requestRecord?.employee?.var_area_director_phone,
+    requestRecord?.lurana_payload?.var_manager_phone,
+    requestRecord?.lurana_payload?.var_reviewer_phone,
+    requestRecord?.lurana_payload?.var_director_phone,
+    requestRecord?.lurana_payload?.var_area_director_phone
+  ];
+  const candidates = [];
 
-  if (!managerPhone) {
+  for (const candidate of explicitCandidates) {
+    const normalizedCandidate = normalizePhoneNumber(candidate, config.defaultCountryCode);
+
+    if (normalizedCandidate) {
+      candidates.push(normalizedCandidate);
+    }
+  }
+
+  for (const source of sources) {
+    for (const candidate of collectManagerPhoneCandidates(source)) {
+      const normalizedCandidate = normalizePhoneNumber(candidate, config.defaultCountryCode);
+
+      if (normalizedCandidate) {
+        candidates.push(normalizedCandidate);
+      }
+    }
+  }
+
+  return [...new Set(candidates)];
+}
+
+function resolveManagerUsernamesFromRecord(requestRecord) {
+  const sources = [
+    requestRecord?.employee || {},
+    requestRecord?.request || {},
+    requestRecord?.lurana_payload || {},
+    requestRecord || {}
+  ];
+  const explicitCandidates = [
+    requestRecord?.employee?.managerUserName,
+    requestRecord?.employee?.managerUsername,
+    requestRecord?.employee?.manager_username,
+    requestRecord?.employee?.reviewerUserName,
+    requestRecord?.employee?.reviewerUsername,
+    requestRecord?.employee?.reviewer_username,
+    requestRecord?.employee?.directorUserName,
+    requestRecord?.employee?.directorUsername,
+    requestRecord?.employee?.director_username,
+    requestRecord?.employee?.areaDirectorUserName,
+    requestRecord?.employee?.areaDirectorUsername,
+    requestRecord?.employee?.area_director_username,
+    requestRecord?.employee?.var_reviewer_user_name,
+    requestRecord?.employee?.var_manager_user_name,
+    requestRecord?.employee?.var_director_user_name,
+    requestRecord?.employee?.var_area_director_user_name,
+    requestRecord?.employee?.reviewer,
+    requestRecord?.employee?.var_reviewer,
+    requestRecord?.lurana_payload?.var_reviewer,
+    requestRecord?.lurana_payload?.reviewer
+  ];
+  const candidates = [];
+
+  for (const candidate of explicitCandidates) {
+    const parsedCandidate = parseUsernameFromLabel(candidate);
+
+    if (parsedCandidate) {
+      candidates.push(parsedCandidate);
+    }
+  }
+
+  for (const source of sources) {
+    for (const candidate of collectManagerUsernameCandidates(source)) {
+      const parsedCandidate = parseUsernameFromLabel(candidate);
+
+      if (parsedCandidate) {
+        candidates.push(parsedCandidate);
+      }
+    }
+  }
+
+  return [...new Set(candidates)];
+}
+
+async function lookupManagerPhoneByUsername(username) {
+  const normalizedUsername = normalizeText(username);
+
+  if (!normalizedUsername) {
+    return '';
+  }
+
+  if (managerPhoneLookupCache.has(normalizedUsername)) {
+    return managerPhoneLookupCache.get(normalizedUsername);
+  }
+
+  try {
+    const apiResponse = await getUserData(normalizedUsername);
+    const employee = hydrateEmployee(parseApiUser(apiResponse), normalizedUsername);
+    const managerPhone = normalizePhoneNumber(employee?.phone, config.defaultCountryCode);
+
+    managerPhoneLookupCache.set(normalizedUsername, managerPhone || '');
+    return managerPhone || '';
+  } catch (error) {
+    console.warn('[MANAGER_LOOKUP] No pude resolver el telefono del revisor por username:', {
+      username: normalizedUsername,
+      detail: describeHttpError(error)
+    });
+    managerPhoneLookupCache.set(normalizedUsername, '');
+    return '';
+  }
+}
+
+async function resolveManagerNotificationTarget(requestRecord) {
+  const directPhones = resolveManagerPhonesFromRecord(requestRecord);
+
+  if (directPhones.length) {
+    return {
+      phone: directPhones[0],
+      source: 'direct_phone',
+      candidates: {
+        phones: directPhones,
+        usernames: []
+      }
+    };
+  }
+
+  const managerUsernames = resolveManagerUsernamesFromRecord(requestRecord);
+
+  for (const username of managerUsernames) {
+    const managerPhone = await lookupManagerPhoneByUsername(username);
+
+    if (managerPhone) {
+      return {
+        phone: managerPhone,
+        username,
+        source: 'username_lookup',
+        candidates: {
+          phones: directPhones,
+          usernames: managerUsernames
+        }
+      };
+    }
+  }
+
+  const fallbackPhone = getDefaultManagerNotificationPhone();
+
+  if (fallbackPhone) {
+    return {
+      phone: fallbackPhone,
+      source: 'env_fallback',
+      candidates: {
+        phones: directPhones,
+        usernames: managerUsernames
+      }
+    };
+  }
+
+  return {
+    phone: '',
+    source: '',
+    candidates: {
+      phones: directPhones,
+      usernames: managerUsernames
+    }
+  };
+}
+
+function managerCanAccessRequest(phone, requestRecord) {
+  if (!requestRecord) {
     return false;
   }
 
-  return phoneNumbersMatch(phone, managerPhone, config.defaultCountryCode);
+  const normalizedPhone = normalizePhoneNumber(phone, config.defaultCountryCode);
+
+  if (!normalizedPhone) {
+    return false;
+  }
+
+  const requestManagerPhone = normalizePhoneNumber(
+    requestRecord?.manager_review?.notified_to,
+    config.defaultCountryCode
+  );
+  const defaultManagerPhone = getDefaultManagerNotificationPhone();
+
+  if (requestManagerPhone) {
+    return phoneNumbersMatch(normalizedPhone, requestManagerPhone, config.defaultCountryCode);
+  }
+
+  return Boolean(
+    defaultManagerPhone && phoneNumbersMatch(normalizedPhone, defaultManagerPhone, config.defaultCountryCode)
+  );
+}
+
+function getManagerNotificationPhone() {
+  return getDefaultManagerNotificationPhone();
+}
+
+function isManagerPhone(phone) {
+  const managerPhone = getDefaultManagerNotificationPhone();
+
+  if (!managerPhone) {
+    const normalizedPhone = normalizePhoneNumber(phone, config.defaultCountryCode);
+
+    if (!normalizedPhone) {
+      return false;
+    }
+
+    return listRequests().some((requestRecord) =>
+      managerCanAccessRequest(normalizedPhone, requestRecord)
+    );
+  }
+
+  if (phoneNumbersMatch(phone, managerPhone, config.defaultCountryCode)) {
+    return true;
+  }
+
+  return listRequests().some((requestRecord) =>
+    managerCanAccessRequest(phone, requestRecord)
+  );
 }
 
 function parseManagerAction(input) {
@@ -918,8 +1258,15 @@ function buildManagerQueueRows(requestRecords = []) {
   }).filter((row) => row.id !== 'manager_request:');
 }
 
-function getManagerPanelRequests() {
+function getManagerPanelRequests(phone = '') {
   return listRequests()
+    .filter((requestRecord) => {
+      if (!phone) {
+        return true;
+      }
+
+      return managerCanAccessRequest(phone, requestRecord);
+    })
     .sort((left, right) => {
       const leftAt =
         Date.parse(left?.manager_review?.pending_comment_requested_at || '') ||
@@ -935,15 +1282,15 @@ function getManagerPanelRequests() {
     });
 }
 
-function getPendingManagerRequests() {
-  return getManagerPanelRequests().filter((requestRecord) => {
+function getPendingManagerRequests(phone = '') {
+  return getManagerPanelRequests(phone).filter((requestRecord) => {
     const status = normalizeText(requestRecord?.manager_review?.status || 'pending').toLowerCase();
     return !status || status === 'pending';
   });
 }
 
-function getManagerHistoryRequests() {
-  return getManagerPanelRequests().filter((requestRecord) => {
+function getManagerHistoryRequests(phone = '') {
+  return getManagerPanelRequests(phone).filter((requestRecord) => {
     const status = normalizeText(requestRecord?.manager_review?.status || 'pending').toLowerCase();
     return status && status !== 'pending';
   });
@@ -1045,6 +1392,21 @@ function buildCreateCasePayload(employee, request) {
     'supervisorId',
     'supervisor_id'
   ]);
+  const reviewer = getEmployeeFieldValue(employee, [
+    'reviewer',
+    'var_reviewer'
+  ]);
+  const reviewerUserName = getEmployeeFieldValue(employee, [
+    'reviewerUserName',
+    'reviewerUsername',
+    'reviewer_username',
+    'var_reviewer_user_name'
+  ]) || parseUsernameFromLabel(reviewer);
+  const reviewerPhone = getEmployeeFieldValue(employee, [
+    'reviewerPhone',
+    'reviewer_phone',
+    'var_reviewer_phone'
+  ]);
 
   return {
     pro_uid: config.luranaProUid,
@@ -1064,6 +1426,9 @@ function buildCreateCasePayload(employee, request) {
         contractTypeLabel,
         uidManager,
         idManager,
+        reviewer,
+        reviewerUserName,
+        reviewerPhone,
         typeRequest: requestType.code,
         typeRequestLabel: request.typeRequestLabel || requestType.label,
         daysHours: timeUnit.code,
@@ -1102,6 +1467,17 @@ function buildTestEmployeePayload(rawEmployee = {}, fallbackPhone = '') {
     contractTypeLabel: normalizeText(rawEmployee.contractTypeLabel || rawEmployee.var_contract_type_label || ''),
     uidManager: normalizeText(rawEmployee.uidManager || rawEmployee.var_area_director || ''),
     idManager: normalizeText(rawEmployee.idManager || ''),
+    reviewer: normalizeText(rawEmployee.reviewer || rawEmployee.var_reviewer || ''),
+    reviewerUserName: normalizeText(
+      rawEmployee.reviewerUserName ||
+      rawEmployee.reviewerUsername ||
+      rawEmployee.var_reviewer_user_name ||
+      parseUsernameFromLabel(rawEmployee.reviewer || rawEmployee.var_reviewer || '')
+    ),
+    reviewerPhone: normalizePhoneNumber(
+      rawEmployee.reviewerPhone || rawEmployee.var_reviewer_phone || '',
+      config.defaultCountryCode
+    ),
     phone: normalizePhoneNumber(
       rawEmployee.phone || fallbackPhone || getManagerNotificationPhone(),
       config.defaultCountryCode
@@ -1237,6 +1613,12 @@ function resolveProcessmakerEmployeePhone(payload, variables) {
 
 function buildEmployeePayloadFromProcessmaker(payload = {}) {
   const variables = getProcessmakerVariables(payload);
+  const reviewerLabel = normalizeText(
+    variables.var_reviewer ||
+    variables.reviewer ||
+    payload.reviewer ||
+    ''
+  );
   return {
     userId: normalizeText(
       variables.var_user_id ||
@@ -1341,6 +1723,26 @@ function buildEmployeePayloadFromProcessmaker(payload = {}) {
       payload.idManager ||
       payload.id_manager ||
       ''
+    ),
+    reviewer: reviewerLabel,
+    reviewerUserName: normalizeText(
+      variables.var_reviewer_user_name ||
+      variables.reviewerUserName ||
+      variables.reviewerUsername ||
+      variables.reviewer_username ||
+      payload.reviewerUserName ||
+      payload.reviewerUsername ||
+      payload.reviewer_username ||
+      parseUsernameFromLabel(reviewerLabel)
+    ),
+    reviewerPhone: normalizePhoneNumber(
+      variables.var_reviewer_phone ||
+      variables.reviewerPhone ||
+      variables.reviewer_phone ||
+      payload.reviewerPhone ||
+      payload.reviewer_phone ||
+      '',
+      config.defaultCountryCode
     ),
     phone: resolveProcessmakerEmployeePhone(payload, variables)
   };
@@ -2056,7 +2458,8 @@ async function notifyEmployeeAboutManagerDecision(requestRecord, decision) {
 }
 
 async function notifyManagerAboutRequest(requestRecord) {
-  const managerPhone = getManagerNotificationPhone();
+  const managerTarget = await resolveManagerNotificationTarget(requestRecord);
+  const managerPhone = managerTarget.phone;
   const requestId = requestRecord?.local_request_id || requestRecord?.request?.request_id || '';
   const notifiedAt = new Date().toISOString();
 
@@ -2070,7 +2473,11 @@ async function notifyManagerAboutRequest(requestRecord) {
 
   if (!managerPhone) {
     const notificationError = {
-      message: 'MANAGER_NOTIFICATION_NUMBER or ADMIN_NOTIFICATION_NUMBER is not configured'
+      message: 'No pude resolver el numero del jefe o revisor para esta solicitud',
+      candidates: managerTarget.candidates || {
+        phones: [],
+        usernames: []
+      }
     };
 
     updateRequest(requestId, (current) => ({
@@ -2080,11 +2487,12 @@ async function notifyManagerAboutRequest(requestRecord) {
         notification_status: 'skipped',
         notified_at: notifiedAt,
         notified_to: '',
+        notification_target_source: '',
         notification_error: notificationError
       }
     }));
 
-    console.warn('[MANAGER_NOTIFY] Numero del jefe no configurado');
+    console.warn('[MANAGER_NOTIFY] No pude resolver un numero dinamico para el jefe/revisor:', notificationError);
 
     return {
       sent: false,
@@ -2111,18 +2519,23 @@ async function notifyManagerAboutRequest(requestRecord) {
         notification_status: 'sent',
         notified_at: notifiedAt,
         notified_to: managerPhone,
+        notification_target_source: managerTarget.source || '',
         notification_error: null
       }
     }));
 
     console.log('[MANAGER_NOTIFY] Resumen enviado al jefe:', {
       requestId,
-      managerPhone
+      managerPhone,
+      source: managerTarget.source || 'unknown',
+      username: managerTarget.username || ''
     });
 
     return {
       sent: true,
-      to: managerPhone
+      to: managerPhone,
+      source: managerTarget.source || '',
+      username: managerTarget.username || ''
     };
   } catch (error) {
     const detail = describeHttpError(error);
@@ -2134,6 +2547,7 @@ async function notifyManagerAboutRequest(requestRecord) {
         notification_status: 'error',
         notified_at: notifiedAt,
         notified_to: managerPhone,
+        notification_target_source: managerTarget.source || '',
         notification_error: detail
       }
     }));
@@ -2189,7 +2603,8 @@ async function createManagerReviewTestRequest(input = {}) {
       pending_comment_message_id: '',
       notification_status: 'pending',
       notified_at: '',
-      notified_to: getManagerNotificationPhone(),
+      notified_to: '',
+      notification_target_source: '',
       notification_error: null,
       lurana_sync_status: 'pending',
       lurana_sync_at: '',
@@ -2267,7 +2682,8 @@ async function createManagerReviewRequestFromProcessmaker(input = {}) {
       pending_comment_message_id: '',
       notification_status: 'pending',
       notified_at: '',
-      notified_to: getManagerNotificationPhone(),
+      notified_to: '',
+      notification_target_source: '',
       notification_error: null,
       lurana_sync_status: 'pending',
       lurana_sync_at: '',
@@ -2470,16 +2886,15 @@ async function finalizeManagerDecision(requestRecord, action, from, messageId, c
 }
 
 async function handlePendingManagerReviewComment(from, messageId, input, plainText, messageType = '') {
-  const managerPhone = getManagerNotificationPhone();
-
-  if (!managerPhone || !phoneNumbersMatch(from, managerPhone, config.defaultCountryCode)) {
-    return false;
-  }
-
   const pendingRequest = findPendingManagerCommentRequest(from);
 
   if (!pendingRequest) {
     return false;
+  }
+
+  if (!managerCanAccessRequest(from, pendingRequest)) {
+    await sendTextMessage(from, 'Este numero no tiene permisos para comentar esta solicitud.');
+    return true;
   }
 
   const pendingAction = normalizeText(pendingRequest?.manager_review?.pending_action).toLowerCase();
@@ -2542,7 +2957,7 @@ async function sendManagerPanel(to, body = 'Panel del jefe') {
 }
 
 async function sendManagerPendingRequests(to, body = 'Solicitudes pendientes') {
-  const requests = getPendingManagerRequests();
+  const requests = getPendingManagerRequests(to);
 
   if (!requests.length) {
     await sendManagerPanel(
@@ -2561,7 +2976,7 @@ async function sendManagerPendingRequests(to, body = 'Solicitudes pendientes') {
 }
 
 async function sendManagerHistoryRequests(to, body = 'Historial de solicitudes') {
-  const requests = getManagerHistoryRequests();
+  const requests = getManagerHistoryRequests(to);
 
   if (!requests.length) {
     await sendManagerPanel(
@@ -2610,26 +3025,20 @@ async function handleManagerDecision(from, messageId, input) {
     return false;
   }
 
-  const managerPhone = getManagerNotificationPhone();
-
-  if (!managerPhone) {
-    await sendTextMessage(from, 'La aprobacion por WhatsApp no esta configurada en este momento.');
-    return true;
-  }
-
-  if (!phoneNumbersMatch(from, managerPhone, config.defaultCountryCode)) {
-    console.warn('[MANAGER_REVIEW] Numero sin permisos para revisar solicitud:', {
-      from,
-      requestId: managerAction.requestId
-    });
-    await sendTextMessage(from, 'Este numero no tiene permisos para responder esta solicitud.');
-    return true;
-  }
-
   const requestRecord = getRequest(managerAction.requestId);
 
   if (!requestRecord) {
     await sendTextMessage(from, 'No encontre la solicitud asociada a este boton.');
+    return true;
+  }
+
+  if (!managerCanAccessRequest(from, requestRecord)) {
+    console.warn('[MANAGER_REVIEW] Numero sin permisos para revisar solicitud:', {
+      from,
+      requestId: managerAction.requestId,
+      notifiedTo: requestRecord?.manager_review?.notified_to || ''
+    });
+    await sendTextMessage(from, 'Este numero no tiene permisos para responder esta solicitud.');
     return true;
   }
 
@@ -2705,6 +3114,43 @@ async function exitConversation(phone, session) {
   await sendTextMessage(phone, 'Hasta luego. Guarde tu perfil para la proxima.');
 }
 
+async function loadEmployeeForUsernameAndPhone(username, phone) {
+  const normalizedUsername = normalizeText(username);
+  const normalizedPhone = normalizePhoneNumber(phone, config.defaultCountryCode);
+
+  if (!normalizedUsername) {
+    return {
+      employee: null,
+      lookupMode: 'empty'
+    };
+  }
+
+  try {
+    const combinedResponse = await getUserDataByUsernameAndPhone(normalizedUsername, normalizedPhone);
+    const combinedEmployee = hydrateEmployee(parseApiUser(combinedResponse), normalizedUsername, normalizedPhone);
+
+    if (combinedEmployee) {
+      return {
+        employee: combinedEmployee,
+        lookupMode: 'username_phone'
+      };
+    }
+  } catch (error) {
+    console.warn('[USER_LOOKUP] Fallback a getUserData simple despues de getUserData/{username}/{celular}:', {
+      username: normalizedUsername,
+      detail: describeHttpError(error)
+    });
+  }
+
+  const apiResponse = await getUserData(normalizedUsername);
+  const employee = hydrateEmployee(parseApiUser(apiResponse), normalizedUsername, normalizedPhone);
+
+  return {
+    employee,
+    lookupMode: 'username_only'
+  };
+}
+
 async function restoreSessionFromProfile(phone, lastProcessedMessageId = '') {
   const profile = getProfile(phone);
 
@@ -2712,8 +3158,7 @@ async function restoreSessionFromProfile(phone, lastProcessedMessageId = '') {
     return null;
   }
 
-  const apiResponse = await getUserData(profile.username);
-  const employee = hydrateEmployee(parseApiUser(apiResponse), profile.username, phone);
+  const { employee } = await loadEmployeeForUsernameAndPhone(profile.username, phone);
 
   if (!employee) {
     throw new Error('No se pudo reconstruir el perfil guardado');
@@ -3011,6 +3456,12 @@ async function processMessage(message) {
 
           if (isManagerPhone(from) && selectedManagerRequestId) {
             const selectedRequest = getRequest(selectedManagerRequestId);
+
+            if (!managerCanAccessRequest(from, selectedRequest)) {
+              await sendTextMessage(from, 'No tienes permisos para ver esa solicitud.');
+              return;
+            }
+
             await sendManagerRequestActionPrompt(from, selectedRequest);
             return;
           }
@@ -3080,8 +3531,7 @@ async function processMessage(message) {
           }
 
           try {
-            const apiResponse = await getUserData(plainText);
-            const employee = hydrateEmployee(parseApiUser(apiResponse), plainText, from);
+            const { employee, lookupMode } = await loadEmployeeForUsernameAndPhone(plainText, from);
 
             if (!employee) {
               await sendTextMessage(from, 'No encontre un usuario con ese username. Intenta nuevamente');
@@ -3105,7 +3555,7 @@ async function processMessage(message) {
 
             await sendButtonsMessage(
               from,
-              `Encontre estos datos:\n\n${employeeSummary(employee)}\n\nSon correctos?`,
+              `Encontre estos datos${lookupMode === 'username_phone' ? ' validando username y celular' : ''}:\n\n${employeeSummary(employee)}\n\nSon correctos?`,
               [
                 { id: 'profile_ok', title: 'Si' },
                 { id: 'profile_retry', title: 'No' }
@@ -3391,7 +3841,8 @@ async function processMessage(message) {
               pending_comment_message_id: '',
               notification_status: 'pending',
               notified_at: '',
-              notified_to: getManagerNotificationPhone(),
+              notified_to: '',
+              notification_target_source: '',
               notification_error: null,
               lurana_sync_status: 'pending',
               lurana_sync_at: '',

@@ -249,6 +249,112 @@ async function getUserData(username) {
   }
 }
 
+async function getUserDataByUsernameAndPhone(username, phone) {
+  const rawUsername = normalizeText(username);
+  const rawPhone = normalizeText(phone);
+  const lookupTemplate = normalizeText(config.luranaUsernamePhoneLookupPath).replace(/^\/+/, '');
+  const phoneCandidates = buildPhoneLookupCandidates(rawPhone);
+  const attempts = [];
+  let lastLookupError = null;
+
+  if (!rawUsername || !rawPhone || !lookupTemplate || !phoneCandidates.length) {
+    setLastUserLookup({
+      lookupType: 'username_phone',
+      username: rawUsername,
+      phone: rawPhone,
+      lookupTemplate,
+      phoneCandidates,
+      attempts,
+      response: null,
+      error: 'Username + phone lookup is not configured or the input is empty'
+    });
+
+    return null;
+  }
+
+  for (const phoneCandidate of phoneCandidates) {
+    const requestPath = lookupTemplate
+      .replace(/\{username\}/gi, encodeURIComponent(rawUsername))
+      .replace(/\{userName\}/gi, encodeURIComponent(rawUsername))
+      .replace(/\{phone\}/gi, encodeURIComponent(phoneCandidate))
+      .replace(/\{normalizedPhone\}/gi, encodeURIComponent(phoneCandidate))
+      .replace(/\{rawPhone\}/gi, encodeURIComponent(rawPhone));
+    const url = `${apiBase()}/${requestPath}`;
+
+    try {
+      const response = await axios.get(url, {
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        timeout: 15000,
+        maxRedirects: 0
+      });
+
+      setLastUserLookup({
+        lookupType: 'username_phone',
+        username: rawUsername,
+        phone: rawPhone,
+        lookupTemplate,
+        phoneCandidates,
+        normalizedPhone: phoneCandidate,
+        requestPath,
+        attempts: [
+          ...attempts,
+          {
+            phoneCandidate,
+            requestPath,
+            status: response.status,
+            ok: true
+          }
+        ],
+        response: response.data,
+        error: null
+      });
+
+      return response.data;
+    } catch (error) {
+      attempts.push({
+        phoneCandidate,
+        requestPath,
+        status: Number(error?.response?.status || 0) || null,
+        ok: false,
+        error: getDebugErrorValue(error)
+      });
+
+      if (isPhoneLookupMiss(error)) {
+        lastLookupError = error;
+        continue;
+      }
+
+      setLastUserLookup({
+        lookupType: 'username_phone',
+        username: rawUsername,
+        phone: rawPhone,
+        lookupTemplate,
+        phoneCandidates,
+        normalizedPhone: phoneCandidate,
+        requestPath,
+        attempts,
+        response: null,
+        error: getDebugErrorValue(error)
+      });
+
+      throw error;
+    }
+  }
+
+  setLastUserLookup({
+    lookupType: 'username_phone',
+    username: rawUsername,
+    phone: rawPhone,
+    lookupTemplate,
+    phoneCandidates,
+    attempts,
+    response: null,
+    error: lastLookupError ? getDebugErrorValue(lastLookupError) : 'No user found for username + phone'
+  });
+
+  return null;
+}
+
 function buildPhoneLookupTemplates() {
   return String(config.luranaPhoneLookupPaths || '')
     .split(',')
@@ -581,6 +687,7 @@ async function uploadInputDocument(appUid, inpDocUid, tasUid, filePath, comment 
 
 module.exports = {
   getUserData,
+  getUserDataByUsernameAndPhone,
   getUserDataByPhone,
   createPtoCase,
   updatePtoData,

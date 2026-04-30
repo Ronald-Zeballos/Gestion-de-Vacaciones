@@ -15,6 +15,7 @@ const {
 } = require('./bot');
 const {
   getUserData,
+  getUserDataByUsernameAndPhone,
   getUserDataByPhone,
   createPtoCase,
   updatePtoData,
@@ -253,6 +254,7 @@ function buildDebugEnvPayload() {
     LURANA_TAS_UID: config.luranaTasUid,
     LURANA_CERT_INP_DOC_UID: config.luranaCertInpDocUid,
     LURANA_PHONE_LOOKUP_PATHS: config.luranaPhoneLookupPaths,
+    LURANA_USERNAME_PHONE_LOOKUP_PATH: config.luranaUsernamePhoneLookupPath,
     LURANA_REVIEW_ACTION_VAR: config.luranaReviewActionVar,
     LURANA_REVIEW_ACTION_LABEL_VAR: config.luranaReviewActionLabelVar,
     LURANA_REVIEW_COMMENT_VAR: config.luranaReviewCommentVar,
@@ -351,6 +353,7 @@ function buildManagerReviewSummary(requestRecord) {
       notification_status: review.notification_status || null,
       notified_at: review.notified_at || null,
       notified_to: review.notified_to || null,
+      notification_target_source: review.notification_target_source || null,
       history: Array.isArray(review.history) ? review.history : []
     }
   };
@@ -628,6 +631,41 @@ app.get('/test-lurana-user/:username', async (req, res) => {
   } catch (error) {
     console.error('[TEST][LURANA_USER] Error:', describeHttpError(error));
     res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
+  }
+});
+
+app.get('/test-lurana-user-phone/:username/:phone', async (req, res) => {
+  try {
+    const data = await getUserDataByUsernameAndPhone(req.params.username, req.params.phone);
+    const lookup = getLastUserLookup();
+
+    if (!data) {
+      return res.status(404).json({
+        ok: false,
+        requestedUsername: String(req.params.username || '').trim(),
+        requestedPhone: String(req.params.phone || '').trim(),
+        lookup,
+        error: {
+          message: 'No se encontro un usuario para ese username y numero'
+        }
+      });
+    }
+
+    return res.json({
+      ok: true,
+      requestedUsername: String(req.params.username || '').trim(),
+      requestedPhone: String(req.params.phone || '').trim(),
+      lookup,
+      data
+    });
+  } catch (error) {
+    console.error('[TEST][LURANA_USER_PHONE] Error:', describeHttpError(error));
+    return res.status(getHttpStatusFromError(error)).json({
+      ...buildErrorResponse(error),
+      requestedUsername: String(req.params.username || '').trim(),
+      requestedPhone: String(req.params.phone || '').trim(),
+      lookup: getLastUserLookup()
+    });
   }
 });
 
