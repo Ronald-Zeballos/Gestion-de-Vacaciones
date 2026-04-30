@@ -11,7 +11,8 @@ const {
 const {
   processMessage,
   createManagerReviewTestRequest,
-  createManagerReviewRequestFromProcessmaker
+  createManagerReviewRequestFromProcessmaker,
+  previewManagerResolution
 } = require('./bot');
 const {
   getUserData,
@@ -666,6 +667,28 @@ app.get('/test-lurana-user-phone/:username/:phone', async (req, res) => {
       requestedPhone: String(req.params.phone || '').trim(),
       lookup: getLastUserLookup()
     });
+  }
+});
+
+app.get('/test-manager-target/:username', async (req, res) => {
+  try {
+    const result = await previewManagerResolution({
+      username: req.params.username,
+      phone: req.query.phone || '',
+      reviewer: req.query.reviewer || '',
+      reviewerUserName: req.query.reviewerUserName || req.query.reviewerUsername || '',
+      reviewerPhone: req.query.reviewerPhone || '',
+      uidManager: req.query.uidManager || req.query.var_area_director || '',
+      idManager: req.query.idManager || ''
+    });
+
+    return res.json({
+      ok: true,
+      data: result
+    });
+  } catch (error) {
+    console.error('[TEST][MANAGER_TARGET] Error:', describeHttpError(error));
+    return res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
   }
 });
 

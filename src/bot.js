@@ -3151,6 +3151,86 @@ async function loadEmployeeForUsernameAndPhone(username, phone) {
   };
 }
 
+async function previewManagerResolution(input = {}) {
+  const username = normalizeText(input.username || input.userName || input.user_name);
+  const phone = normalizePhoneNumber(input.phone || input.employeePhone || '', config.defaultCountryCode);
+  let employee = null;
+  let lookupMode = 'manual';
+  let lookupError = null;
+
+  if (username) {
+    try {
+      const loaded = await loadEmployeeForUsernameAndPhone(username, phone);
+      employee = loaded.employee;
+      lookupMode = loaded.lookupMode;
+    } catch (error) {
+      lookupError = describeHttpError(error);
+    }
+  }
+
+  const reviewerLabel = normalizeText(
+    input.reviewer ||
+    input.var_reviewer ||
+    employee?.reviewer ||
+    ''
+  );
+  const reviewerUserName = normalizeText(
+    input.reviewerUserName ||
+    input.reviewerUsername ||
+    input.reviewer_username ||
+    input.var_reviewer_user_name ||
+    employee?.reviewerUserName ||
+    parseUsernameFromLabel(reviewerLabel)
+  );
+  const reviewerPhone = normalizePhoneNumber(
+    input.reviewerPhone ||
+    input.reviewer_phone ||
+    input.var_reviewer_phone ||
+    employee?.reviewerPhone ||
+    '',
+    config.defaultCountryCode
+  );
+  const previewEmployee = {
+    ...(employee || {}),
+    userName: normalizeText(employee?.userName || username),
+    phone: phone || employee?.phone || '',
+    reviewer: reviewerLabel,
+    reviewerUserName,
+    reviewerPhone,
+    uidManager: normalizeText(input.uidManager || input.var_area_director || employee?.uidManager || ''),
+    idManager: normalizeText(input.idManager || employee?.idManager || '')
+  };
+  const requestRecord = {
+    employee: previewEmployee,
+    request: {},
+    manager_review: {
+      notified_to: ''
+    },
+    lurana_payload: input
+  };
+  const managerTarget = await resolveManagerNotificationTarget(requestRecord);
+
+  return {
+    username,
+    phone,
+    lookupMode,
+    lookupError,
+    employee: {
+      userName: previewEmployee.userName || '',
+      firstName: previewEmployee.firstName || '',
+      lastName: previewEmployee.lastName || '',
+      email: previewEmployee.email || '',
+      phone: previewEmployee.phone || '',
+      reviewer: previewEmployee.reviewer || '',
+      reviewerUserName: previewEmployee.reviewerUserName || '',
+      reviewerPhone: previewEmployee.reviewerPhone || '',
+      uidManager: previewEmployee.uidManager || '',
+      idManager: previewEmployee.idManager || ''
+    },
+    managerTarget
+  };
+}
+
 async function restoreSessionFromProfile(phone, lastProcessedMessageId = '') {
   const profile = getProfile(phone);
 
@@ -3925,5 +4005,6 @@ async function processMessage(message) {
 module.exports = {
   processMessage,
   createManagerReviewTestRequest,
-  createManagerReviewRequestFromProcessmaker
+  createManagerReviewRequestFromProcessmaker,
+  previewManagerResolution
 };
