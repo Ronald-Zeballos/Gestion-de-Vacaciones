@@ -983,9 +983,12 @@ function getManagerDecisionDetails(action) {
     return {
       status: 'approved',
       statusLabel: 'aprobada',
+      employeeStatusLabel: 'aprobada',
       confirmationLabel: 'Aprobada',
+      buttonTitle: 'Aprobar',
       actionCode: 1,
       actionLabel: 'Aprobar',
+      nextTaskLabel: 'RRHH - Validar Solicitud',
       requiresComment: false
     };
   }
@@ -993,10 +996,13 @@ function getManagerDecisionDetails(action) {
   if (action === MANAGER_OBSERVE_ACTION) {
     return {
       status: 'observed',
-      statusLabel: 'observada',
-      confirmationLabel: 'Observada',
+      statusLabel: 'enviada a correccion',
+      employeeStatusLabel: 'enviada a correccion',
+      confirmationLabel: 'Correccion solicitada',
+      buttonTitle: 'Correccion',
       actionCode: 2,
       actionLabel: 'Observar',
+      nextTaskLabel: 'Correccion de Solicitud',
       requiresComment: true
     };
   }
@@ -1005,9 +1011,12 @@ function getManagerDecisionDetails(action) {
     return {
       status: 'rejected',
       statusLabel: 'rechazada',
+      employeeStatusLabel: 'rechazada',
       confirmationLabel: 'Rechazada',
+      buttonTitle: 'Rechazar',
       actionCode: 3,
       actionLabel: 'Rechazar',
+      nextTaskLabel: 'Solicitud Rechazada',
       requiresComment: true
     };
   }
@@ -1035,7 +1044,7 @@ function getManagerActionFromStatus(status) {
 
 function buildManagerCommentPrompt(requestRecord, decision) {
   const lines = [
-    `${decision.actionLabel} solicitud`,
+    `${decision.buttonTitle || decision.actionLabel} solicitud`,
     '',
     `Solicitud: ${requestRecord?.local_request_id || requestRecord?.request?.request_id || 'Sin id'}`
   ];
@@ -1045,8 +1054,11 @@ function buildManagerCommentPrompt(requestRecord, decision) {
   }
 
   lines.push('');
+  if (decision?.nextTaskLabel) {
+    lines.push(`Siguiente paso: ${decision.nextTaskLabel}`);
+  }
   lines.push('Escribe el comentario del revisor.');
-  lines.push('Este comentario es obligatorio para observar o rechazar.');
+  lines.push('Este comentario es obligatorio para enviar a correccion o rechazar.');
   lines.push('Si no deseas continuar, escribe "cancelar".');
 
   return lines.join('\n');
@@ -1205,7 +1217,7 @@ function buildManagerRequestSummary(requestRecord) {
   lines.push(`Certificado medico: ${certificateStatus}`);
   lines.push('');
   lines.push('Selecciona una opcion para registrar tu decision.');
-  lines.push('Si observas o rechazas, luego deberas escribir un comentario obligatorio.');
+  lines.push('Si envias a correccion o rechazas, luego deberas escribir un comentario obligatorio.');
 
   return limitMessageLength(lines.filter((line) => line !== '').join('\n').replace(/\n{3,}/g, '\n\n'));
 }
@@ -1219,6 +1231,10 @@ function buildManagerReviewedRequestSummary(requestRecord) {
 
   if (review.decision_display || review.decision) {
     lines.push(`Decision: ${review.decision_display || review.decision}`);
+  }
+
+  if (review.next_task_label) {
+    lines.push(`Siguiente paso: ${review.next_task_label}`);
   }
 
   if (review.decision_comment) {
@@ -1242,7 +1258,7 @@ function buildManagerQueueRows(requestRecords = []) {
       reviewStatus === 'approved'
         ? 'Aprobada'
         : reviewStatus === 'observed'
-          ? 'Observada'
+          ? 'Correccion'
           : reviewStatus === 'rejected'
             ? 'Rechazada'
             : 'Pendiente';
@@ -2436,7 +2452,7 @@ async function notifyEmployeeAboutManagerDecision(requestRecord, decision) {
 
   const lines = [
     `Hola ${getEmployeeDisplayName(requestRecord?.employee)}.`,
-    `Tu solicitud fue ${decision.statusLabel} por tu jefe.`
+    `Tu solicitud fue ${decision.employeeStatusLabel || decision.statusLabel} por tu jefe.`
   ];
 
   if (requestRecord?.app_uid) {
@@ -2445,8 +2461,16 @@ async function notifyEmployeeAboutManagerDecision(requestRecord, decision) {
 
   lines.push(`Solicitud: ${requestRecord?.local_request_id || requestRecord?.request?.request_id || 'Sin id'}`);
 
+  if (decision?.nextTaskLabel) {
+    lines.push(`Siguiente paso: ${decision.nextTaskLabel}`);
+  }
+
   if (decisionComment) {
     lines.push(`Comentario del revisor: ${decisionComment}`);
+  }
+
+  if (decision?.actionCode === 2) {
+    lines.push('Revisa el comentario y continua el ajuste cuando Lurana te devuelva la solicitud para correccion.');
   }
 
   await sendTextMessage(employeePhone, lines.join('\n'));
@@ -2506,9 +2530,9 @@ async function notifyManagerAboutRequest(requestRecord) {
       managerPhone,
       buildManagerRequestSummary(requestRecord),
       [
-        { id: `${MANAGER_APPROVE_ACTION}:${requestId}`, title: 'Aprobar' },
-        { id: `${MANAGER_OBSERVE_ACTION}:${requestId}`, title: 'Observar' },
-        { id: `${MANAGER_REJECT_ACTION}:${requestId}`, title: 'Rechazar' }
+        { id: `${MANAGER_APPROVE_ACTION}:${requestId}`, title: getManagerDecisionDetails(MANAGER_APPROVE_ACTION)?.buttonTitle || 'Aprobar' },
+        { id: `${MANAGER_OBSERVE_ACTION}:${requestId}`, title: getManagerDecisionDetails(MANAGER_OBSERVE_ACTION)?.buttonTitle || 'Correccion' },
+        { id: `${MANAGER_REJECT_ACTION}:${requestId}`, title: getManagerDecisionDetails(MANAGER_REJECT_ACTION)?.buttonTitle || 'Rechazar' }
       ]
     );
 
@@ -2597,6 +2621,7 @@ async function createManagerReviewTestRequest(input = {}) {
       decision_code: null,
       decision_comment: '',
       decision_display: '',
+      next_task_label: '',
       pending_action: '',
       pending_comment_from: '',
       pending_comment_requested_at: '',
@@ -2676,6 +2701,7 @@ async function createManagerReviewRequestFromProcessmaker(input = {}) {
       decision_code: null,
       decision_comment: '',
       decision_display: '',
+      next_task_label: '',
       pending_action: '',
       pending_comment_from: '',
       pending_comment_requested_at: '',
@@ -2823,6 +2849,7 @@ async function finalizeManagerDecision(requestRecord, action, from, messageId, c
       decision: decision.actionLabel,
       decision_display: decision.confirmationLabel,
       decision_code: decision.actionCode,
+      next_task_label: decision.nextTaskLabel || '',
       decision_comment: normalizedComment,
       decision_at: decisionAt,
       decided_by: normalizePhoneNumber(from, config.defaultCountryCode),
@@ -2839,6 +2866,7 @@ async function finalizeManagerDecision(requestRecord, action, from, messageId, c
           status: decision.status,
           decision: decision.actionLabel,
           decision_code: decision.actionCode,
+          next_task_label: decision.nextTaskLabel || '',
           comment: normalizedComment,
           decided_by: normalizePhoneNumber(from, config.defaultCountryCode)
         }
@@ -2864,6 +2892,10 @@ async function finalizeManagerDecision(requestRecord, action, from, messageId, c
 
   if (normalizedComment) {
     confirmationLines.push(`Comentario: ${normalizedComment}`);
+  }
+
+  if (decision.nextTaskLabel) {
+    confirmationLines.push(`Siguiente paso: ${decision.nextTaskLabel}`);
   }
 
   if (syncResult.sent) {
@@ -3011,9 +3043,9 @@ async function sendManagerRequestActionPrompt(to, requestRecord) {
     to,
     buildManagerRequestSummary(requestRecord),
     [
-      { id: `${MANAGER_APPROVE_ACTION}:${requestRecord.local_request_id}`, title: 'Aprobar' },
-      { id: `${MANAGER_OBSERVE_ACTION}:${requestRecord.local_request_id}`, title: 'Observar' },
-      { id: `${MANAGER_REJECT_ACTION}:${requestRecord.local_request_id}`, title: 'Rechazar' }
+      { id: `${MANAGER_APPROVE_ACTION}:${requestRecord.local_request_id}`, title: getManagerDecisionDetails(MANAGER_APPROVE_ACTION)?.buttonTitle || 'Aprobar' },
+      { id: `${MANAGER_OBSERVE_ACTION}:${requestRecord.local_request_id}`, title: getManagerDecisionDetails(MANAGER_OBSERVE_ACTION)?.buttonTitle || 'Correccion' },
+      { id: `${MANAGER_REJECT_ACTION}:${requestRecord.local_request_id}`, title: getManagerDecisionDetails(MANAGER_REJECT_ACTION)?.buttonTitle || 'Rechazar' }
     ]
   );
 }
@@ -3915,6 +3947,7 @@ async function processMessage(message) {
               decision_code: null,
               decision_comment: '',
               decision_display: '',
+              next_task_label: '',
               pending_action: '',
               pending_comment_from: '',
               pending_comment_requested_at: '',

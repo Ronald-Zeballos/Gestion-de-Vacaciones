@@ -343,6 +343,7 @@ function buildManagerReviewSummary(requestRecord) {
       decision: review.decision || null,
       decision_code: decisionCode,
       decision_display: review.decision_display || null,
+      next_task_label: review.next_task_label || null,
       decision_comment: review.decision_comment || null,
       decision_at: review.decision_at || null,
       decided_by: review.decided_by || null,
@@ -393,6 +394,7 @@ function buildProcessMakerDecisionPayload(requestRecord) {
       manager_review_status: summary.manager_review.status,
       manager_review_decision: summary.manager_review.decision,
       manager_review_decision_code: summary.manager_review.decision_code,
+      manager_review_next_task_label: summary.manager_review.next_task_label,
       manager_review_decision_at: summary.manager_review.decision_at,
       manager_review_decided_by: summary.manager_review.decided_by
     }
