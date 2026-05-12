@@ -223,7 +223,9 @@ function getDebugErrorValue(error) {
 }
 
 async function getUserData(username) {
-  const url = `${apiBase()}/plugin-PsManagementTools/getUserData/${encodeURIComponent(username)}`;
+  const rawUsername = normalizeText(username);
+  const requestPath = `plugin-PsManagementTools/getUserData/${encodeURIComponent(rawUsername)}`;
+  const url = `${apiBase()}/${requestPath}`;
   try {
     const response = await axios.get(url, {
       headers: await authHeaders({ 'Content-Type': 'application/json' }),
@@ -232,7 +234,11 @@ async function getUserData(username) {
     });
 
     setLastUserLookup({
-      username,
+      lookupType: 'username',
+      username: rawUsername,
+      requestPath,
+      status: response.status,
+      ok: true,
       response: response.data,
       error: null
     });
@@ -240,7 +246,11 @@ async function getUserData(username) {
     return response.data;
   } catch (error) {
     setLastUserLookup({
-      username,
+      lookupType: 'username',
+      username: rawUsername,
+      requestPath,
+      status: Number(error?.response?.status || 0) || null,
+      ok: false,
       response: null,
       error: getDebugErrorValue(error)
     });

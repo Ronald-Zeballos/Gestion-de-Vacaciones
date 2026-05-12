@@ -638,7 +638,7 @@ app.get('/test-lurana-user/:username', async (req, res) => {
       requestedUsername,
       requestedPhone: usePhoneLookup ? requestedPhone : '',
       lookupMode: usePhoneLookup ? 'username_phone' : 'username',
-      lookup: usePhoneLookup ? getLastUserLookup() : null,
+      lookup: getLastUserLookup(),
       data
     });
   } catch (error) {
@@ -648,7 +648,7 @@ app.get('/test-lurana-user/:username', async (req, res) => {
       requestedUsername: String(req.params.username || '').trim(),
       requestedPhone: String(req.query.phone || '').trim(),
       lookupMode: String(req.query.phone || '').trim() ? 'username_phone' : 'username',
-      lookup: String(req.query.phone || '').trim() ? getLastUserLookup() : null
+      lookup: getLastUserLookup()
     });
   }
 });
