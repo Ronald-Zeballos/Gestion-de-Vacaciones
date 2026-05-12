@@ -222,73 +222,193 @@ function getDebugErrorValue(error) {
   return error?.response?.data || error?.message || 'Unknown error';
 }
 
-async function getUserData(username) {
+function buildUsernameLookupCandidates(username) {
   const rawUsername = normalizeText(username);
-  const requestPath = `plugin-PsManagementTools/getUserData/${encodeURIComponent(rawUsername)}`;
-  const url = `${apiBase()}/${requestPath}`;
-  try {
-    const response = await axios.get(url, {
-      headers: await authHeaders({ 'Content-Type': 'application/json' }),
-      timeout: 15000,
-      maxRedirects: 0
-    });
 
-    setLastUserLookup({
-      lookupType: 'username',
-      username: rawUsername,
-      requestPath,
-      status: response.status,
-      ok: true,
-      response: response.data,
-      error: null
-    });
-
-    return response.data;
-  } catch (error) {
-    setLastUserLookup({
-      lookupType: 'username',
-      username: rawUsername,
-      requestPath,
-      status: Number(error?.response?.status || 0) || null,
-      ok: false,
-      response: null,
-      error: getDebugErrorValue(error)
-    });
-
-    throw error;
+  if (!rawUsername) {
+    return [];
   }
+
+  return [...new Set([
+    rawUsername,
+    rawUsername.toLowerCase(),
+    rawUsername.toUpperCase(),
+    `${rawUsername.charAt(0).toUpperCase()}${rawUsername.slice(1).toLowerCase()}`
+  ].map((item) => normalizeText(item)).filter(Boolean))];
 }
 
-async function getUserDataByUsernameAndPhone(username, phone) {
+function extractLookupMessage(value, depth = 0) {
+  if (!value || depth > 5) {
+    return '';
+  }
+
+  const normalizedValue = normalizeLuranaResponseValue(value, depth);
+
+  if (normalizedValue !== value) {
+    return extractLookupMessage(normalizedValue, depth + 1);
+  }
+
+  if (typeof value === 'string') {
+    return normalizeText(value);
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const message = extractLookupMessage(item, depth + 1);
+
+      if (message) {
+        return message;
+      }
+    }
+
+    return '';
+  }
+
+  if (typeof value !== 'object') {
+    return '';
+  }
+
+  if (typeof value.response === 'string' && normalizeText(value.response)) {
+    return normalizeText(value.response);
+  }
+
+  if (typeof value.message === 'string' && normalizeText(value.message)) {
+    return normalizeText(value.message);
+  }
+
+  for (const nestedValue of Object.values(value)) {
+    const message = extractLookupMessage(nestedValue, depth + 1);
+
+    if (message) {
+      return message;
+    }
+  }
+
+  return '';
+}
+
+function isKnownLookupMissMessage(message) {
+  const normalizedMessage = normalizeText(message).toLowerCase();
+
+  if (!normalizedMessage) {
+    return false;
+  }
+
+  return [
+    'no esta registrado',
+    'no está registrado',
+    'no se encontro',
+    'no se encontró',
+    'username no existe',
+    'usuario no existe',
+    'user not found',
+    'not found'
+  ].some((fragment) => normalizedMessage.includes(fragment));
+}
+
+function payloadHasUserLikeFields(value, depth = 0) {
+  if (!value || depth > 5) {
+    return false;
+  }
+
+  const normalizedValue = normalizeLuranaResponseValue(value, depth);
+
+  if (normalizedValue !== value) {
+    return payloadHasUserLikeFields(normalizedValue, depth + 1);
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => payloadHasUserLikeFields(item, depth + 1));
+  }
+
+  if (typeof value !== 'object') {
+    return false;
+  }
+
+  const userLikeKeys = new Set([
+    'id',
+    'userid',
+    'username',
+    'usrid',
+    'usruid',
+    'usrusername',
+    'firstname',
+    'lastname',
+    'email',
+    'mail'
+  ]);
+  const keys = Object.keys(value);
+
+  for (const key of keys) {
+    const normalizedKey = normalizeText(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const nestedValue = value[key];
+
+    if (
+      userLikeKeys.has(normalizedKey) &&
+      (typeof nestedValue === 'string' || typeof nestedValue === 'number') &&
+      String(nestedValue).trim()
+    ) {
+      return true;
+    }
+  }
+
+  return Object.values(value).some((nestedValue) => payloadHasUserLikeFields(nestedValue, depth + 1));
+}
+
+function isLookupBusinessMiss(payload) {
+  const normalizedPayload = normalizeLuranaResponseValue(payload);
+
+  if (!normalizedPayload) {
+    return true;
+  }
+
+  if (Array.isArray(normalizedPayload)) {
+    return normalizedPayload.length === 0;
+  }
+
+  const message = extractLookupMessage(normalizedPayload);
+
+  if (isKnownLookupMissMessage(message)) {
+    return true;
+  }
+
+  if (Array.isArray(normalizedPayload?.data) && normalizedPayload.data.length === 0) {
+    return true;
+  }
+
+  return false;
+}
+
+function isSuccessfulUserLookupPayload(payload) {
+  if (isLookupBusinessMiss(payload)) {
+    return false;
+  }
+
+  return payloadHasUserLikeFields(payload);
+}
+
+async function getUserData(username) {
   const rawUsername = normalizeText(username);
-  const rawPhone = normalizeText(phone);
-  const lookupTemplate = normalizeText(config.luranaUsernamePhoneLookupPath).replace(/^\/+/, '');
-  const phoneCandidates = buildPhoneLookupCandidates(rawPhone);
+  const usernameCandidates = buildUsernameLookupCandidates(rawUsername);
   const attempts = [];
   let lastLookupError = null;
+  let lastResponse = null;
 
-  if (!rawUsername || !rawPhone || !lookupTemplate || !phoneCandidates.length) {
+  if (!rawUsername || !usernameCandidates.length) {
     setLastUserLookup({
-      lookupType: 'username_phone',
+      lookupType: 'username',
       username: rawUsername,
-      phone: rawPhone,
-      lookupTemplate,
-      phoneCandidates,
+      usernameCandidates,
       attempts,
       response: null,
-      error: 'Username + phone lookup is not configured or the input is empty'
+      error: 'Username is empty'
     });
 
     return null;
   }
 
-  for (const phoneCandidate of phoneCandidates) {
-    const requestPath = lookupTemplate
-      .replace(/\{username\}/gi, encodeURIComponent(rawUsername))
-      .replace(/\{userName\}/gi, encodeURIComponent(rawUsername))
-      .replace(/\{phone\}/gi, encodeURIComponent(phoneCandidate))
-      .replace(/\{normalizedPhone\}/gi, encodeURIComponent(phoneCandidate))
-      .replace(/\{rawPhone\}/gi, encodeURIComponent(rawPhone));
+  for (const usernameCandidate of usernameCandidates) {
+    const requestPath = `plugin-PsManagementTools/getUserData/${encodeURIComponent(usernameCandidate)}`;
     const url = `${apiBase()}/${requestPath}`;
 
     try {
@@ -298,31 +418,43 @@ async function getUserDataByUsernameAndPhone(username, phone) {
         maxRedirects: 0
       });
 
-      setLastUserLookup({
-        lookupType: 'username_phone',
-        username: rawUsername,
-        phone: rawPhone,
-        lookupTemplate,
-        phoneCandidates,
-        normalizedPhone: phoneCandidate,
-        requestPath,
-        attempts: [
-          ...attempts,
-          {
-            phoneCandidate,
-            requestPath,
-            status: response.status,
-            ok: true
-          }
-        ],
-        response: response.data,
-        error: null
-      });
+      lastResponse = response.data;
 
-      return response.data;
+      if (isSuccessfulUserLookupPayload(response.data)) {
+        setLastUserLookup({
+          lookupType: 'username',
+          username: rawUsername,
+          usernameCandidates,
+          requestPath,
+          status: response.status,
+          ok: true,
+          attempts: [
+            ...attempts,
+            {
+              usernameCandidate,
+              requestPath,
+              status: response.status,
+              ok: true
+            }
+          ],
+          response: response.data,
+          error: null
+        });
+
+        return response.data;
+      }
+
+      attempts.push({
+        usernameCandidate,
+        requestPath,
+        status: response.status,
+        ok: false,
+        businessMiss: true,
+        response: response.data
+      });
     } catch (error) {
       attempts.push({
-        phoneCandidate,
+        usernameCandidate,
         requestPath,
         status: Number(error?.response?.status || 0) || null,
         ok: false,
@@ -335,12 +467,9 @@ async function getUserDataByUsernameAndPhone(username, phone) {
       }
 
       setLastUserLookup({
-        lookupType: 'username_phone',
+        lookupType: 'username',
         username: rawUsername,
-        phone: rawPhone,
-        lookupTemplate,
-        phoneCandidates,
-        normalizedPhone: phoneCandidate,
+        usernameCandidates,
         requestPath,
         attempts,
         response: null,
@@ -352,13 +481,141 @@ async function getUserDataByUsernameAndPhone(username, phone) {
   }
 
   setLastUserLookup({
+    lookupType: 'username',
+    username: rawUsername,
+    usernameCandidates,
+    attempts,
+    response: lastResponse,
+    error: lastLookupError ? getDebugErrorValue(lastLookupError) : 'No user found for username'
+  });
+
+  return null;
+}
+
+async function getUserDataByUsernameAndPhone(username, phone) {
+  const rawUsername = normalizeText(username);
+  const rawPhone = normalizeText(phone);
+  const lookupTemplate = normalizeText(config.luranaUsernamePhoneLookupPath).replace(/^\/+/, '');
+  const usernameCandidates = buildUsernameLookupCandidates(rawUsername);
+  const phoneCandidates = buildPhoneLookupCandidates(rawPhone);
+  const attempts = [];
+  let lastLookupError = null;
+  let lastResponse = null;
+
+  if (!rawUsername || !rawPhone || !lookupTemplate || !phoneCandidates.length || !usernameCandidates.length) {
+    setLastUserLookup({
+      lookupType: 'username_phone',
+      username: rawUsername,
+      phone: rawPhone,
+      lookupTemplate,
+      usernameCandidates,
+      phoneCandidates,
+      attempts,
+      response: null,
+      error: 'Username + phone lookup is not configured or the input is empty'
+    });
+
+    return null;
+  }
+
+  for (const usernameCandidate of usernameCandidates) {
+    for (const phoneCandidate of phoneCandidates) {
+      const requestPath = lookupTemplate
+        .replace(/\{username\}/gi, encodeURIComponent(usernameCandidate))
+        .replace(/\{userName\}/gi, encodeURIComponent(usernameCandidate))
+        .replace(/\{phone\}/gi, encodeURIComponent(phoneCandidate))
+        .replace(/\{normalizedPhone\}/gi, encodeURIComponent(phoneCandidate))
+        .replace(/\{rawPhone\}/gi, encodeURIComponent(rawPhone));
+      const url = `${apiBase()}/${requestPath}`;
+
+      try {
+        const response = await axios.get(url, {
+          headers: await authHeaders({ 'Content-Type': 'application/json' }),
+          timeout: 15000,
+          maxRedirects: 0
+        });
+
+        lastResponse = response.data;
+
+        if (isSuccessfulUserLookupPayload(response.data)) {
+          setLastUserLookup({
+            lookupType: 'username_phone',
+            username: rawUsername,
+            phone: rawPhone,
+            lookupTemplate,
+            usernameCandidates,
+            phoneCandidates,
+            normalizedPhone: phoneCandidate,
+            requestPath,
+            attempts: [
+              ...attempts,
+              {
+                usernameCandidate,
+                phoneCandidate,
+                requestPath,
+                status: response.status,
+                ok: true
+              }
+            ],
+            response: response.data,
+            error: null
+          });
+
+          return response.data;
+        }
+
+        attempts.push({
+          usernameCandidate,
+          phoneCandidate,
+          requestPath,
+          status: response.status,
+          ok: false,
+          businessMiss: true,
+          response: response.data
+        });
+      } catch (error) {
+        attempts.push({
+          usernameCandidate,
+          phoneCandidate,
+          requestPath,
+          status: Number(error?.response?.status || 0) || null,
+          ok: false,
+          error: getDebugErrorValue(error)
+        });
+
+        if (isPhoneLookupMiss(error)) {
+          lastLookupError = error;
+          continue;
+        }
+
+        setLastUserLookup({
+          lookupType: 'username_phone',
+          username: rawUsername,
+          phone: rawPhone,
+          lookupTemplate,
+          usernameCandidates,
+          phoneCandidates,
+          normalizedPhone: phoneCandidate,
+          requestPath,
+          attempts,
+          response: null,
+          error: getDebugErrorValue(error)
+        });
+
+        throw error;
+      }
+    }
+  }
+
+  setLastUserLookup({
     lookupType: 'username_phone',
     username: rawUsername,
     phone: rawPhone,
     lookupTemplate,
+    usernameCandidates,
     phoneCandidates,
     attempts,
-    response: null,
+    response: lastResponse,
     error: lastLookupError ? getDebugErrorValue(lastLookupError) : 'No user found for username + phone'
   });
 
@@ -419,6 +676,7 @@ async function getUserDataByPhone(phone) {
   const phoneCandidates = buildPhoneLookupCandidates(rawPhone);
   let lastLookupError = null;
   const attempts = [];
+  let lastResponse = null;
 
   if (!rawPhone || !lookupTemplates.length || !phoneCandidates.length) {
     setLastUserLookup({
@@ -446,27 +704,40 @@ async function getUserDataByPhone(phone) {
           maxRedirects: 0
         });
 
-        setLastUserLookup({
-          lookupType: 'phone',
-          phone: rawPhone,
-          phoneCandidates,
-          lookupTemplates,
-          normalizedPhone: phoneCandidate,
-          requestPath,
-          attempts: [
-            ...attempts,
-            {
-              phoneCandidate,
-              requestPath,
-              status: response.status,
-              ok: true
-            }
-          ],
-          response: response.data,
-          error: null
-        });
+        lastResponse = response.data;
 
-        return response.data;
+        if (isSuccessfulUserLookupPayload(response.data)) {
+          setLastUserLookup({
+            lookupType: 'phone',
+            phone: rawPhone,
+            phoneCandidates,
+            lookupTemplates,
+            normalizedPhone: phoneCandidate,
+            requestPath,
+            attempts: [
+              ...attempts,
+              {
+                phoneCandidate,
+                requestPath,
+                status: response.status,
+                ok: true
+              }
+            ],
+            response: response.data,
+            error: null
+          });
+
+          return response.data;
+        }
+
+        attempts.push({
+          phoneCandidate,
+          requestPath,
+          status: response.status,
+          ok: false,
+          businessMiss: true,
+          response: response.data
+        });
       } catch (error) {
         attempts.push({
           phoneCandidate,
@@ -504,7 +775,7 @@ async function getUserDataByPhone(phone) {
     phoneCandidates,
     lookupTemplates,
     attempts,
-    response: null,
+    response: lastResponse,
     error: lastLookupError ? getDebugErrorValue(lastLookupError) : 'No user found for phone'
   });
 

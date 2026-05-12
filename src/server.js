@@ -633,6 +633,21 @@ app.get('/test-lurana-user/:username', async (req, res) => {
       ? await getUserDataByUsernameAndPhone(requestedUsername, requestedPhone)
       : await getUserData(requestedUsername);
 
+    if (!data) {
+      return res.json({
+        ok: false,
+        requestedUsername,
+        requestedPhone: usePhoneLookup ? requestedPhone : '',
+        lookupMode: usePhoneLookup ? 'username_phone' : 'username',
+        lookup: getLastUserLookup(),
+        error: {
+          message: usePhoneLookup
+            ? 'No se encontro un usuario para ese username y numero'
+            : 'No se encontro un usuario para ese username'
+        }
+      });
+    }
+
     res.json({
       ok: true,
       requestedUsername,
