@@ -2593,14 +2593,27 @@ async function createManagerReviewTestRequest(input = {}) {
     input?.request?.request_id ||
     uuidv4()
   );
+  const shouldCreateCase = ['1', 'true', 'yes', 'si', 'on'].includes(
+    normalizeText(input.createCase || input.create_case).toLowerCase()
+  );
   const employeePhone = normalizePhoneNumber(
     input.phone || input?.employee?.phone || getManagerNotificationPhone(),
     config.defaultCountryCode
   );
   const employee = buildTestEmployeePayload(input.employee || {}, employeePhone);
   const request = buildTestRequestPayload(input.request || {}, localRequestId);
-  const appUid = normalizeText(input.app_uid || input.appUid);
-  const appNumber = normalizeText(input.app_number || input.appNumber);
+  let appUid = normalizeText(input.app_uid || input.appUid);
+  let appNumber = normalizeText(input.app_number || input.appNumber);
+  let luranaPayload = input.lurana_payload || null;
+  let luranaResponse = input.lurana_response || null;
+
+  if (shouldCreateCase) {
+    luranaPayload = buildCreateCasePayload(employee, request);
+    luranaResponse = await createPtoCase(luranaPayload);
+    appUid = appUid || normalizeText(extractAppUid(luranaResponse));
+    appNumber = appNumber || normalizeText(extractAppNumber(luranaResponse));
+  }
+
   const requestRecord = {
     local_request_id: localRequestId,
     phone: employeePhone,
@@ -2608,8 +2621,8 @@ async function createManagerReviewTestRequest(input = {}) {
     app_number: appNumber || null,
     employee,
     request,
-    lurana_payload: input.lurana_payload || null,
-    lurana_response: input.lurana_response || null,
+    lurana_payload: luranaPayload,
+    lurana_response: luranaResponse,
     cert_med_result: null,
     cert_med_error: null,
     manager_review: {

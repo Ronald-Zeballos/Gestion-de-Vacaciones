@@ -949,11 +949,21 @@ app.post('/test-lurana-review', async (req, res) => {
 
 app.post('/test-manager-notification', async (req, res) => {
   try {
-    const result = await createManagerReviewTestRequest(req.body || {});
+    const shouldCreateCase =
+      isTruthyFlag(req.query.createCase) ||
+      isTruthyFlag(req.body?.createCase) ||
+      isTruthyFlag(req.body?.create_case);
+    const result = await createManagerReviewTestRequest({
+      ...(req.body || {}),
+      createCase: shouldCreateCase
+    });
 
     res.json({
       ok: true,
-      message: 'Solicitud de prueba enviada al jefe',
+      message: shouldCreateCase
+        ? 'Solicitud de prueba creada en Lurana y enviada al jefe'
+        : 'Solicitud de prueba enviada al jefe',
+      createCase: shouldCreateCase,
       requestId: result.requestRecord?.local_request_id || null,
       data: buildManagerReviewSummary(result.requestRecord),
       processmakerPayload: buildProcessMakerDecisionPayload(result.requestRecord),

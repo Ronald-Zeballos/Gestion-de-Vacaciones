@@ -387,6 +387,54 @@ function isSuccessfulUserLookupPayload(payload) {
   return payloadHasUserLikeFields(payload);
 }
 
+function isKnownUpdateBusinessErrorMessage(message) {
+  const normalizedMessage = normalizeText(message).toLowerCase();
+
+  if (!normalizedMessage) {
+    return false;
+  }
+
+  return [
+    'error to evaluate',
+    'error al evaluar',
+    'error evaluando'
+  ].some((fragment) => normalizedMessage.includes(fragment));
+}
+
+function buildBusinessError(status, code, message, data) {
+  const error = new Error(message || 'Business error');
+
+  error.code = code || 'BUSINESS_ERROR';
+  error.isBusinessError = true;
+  error.response = {
+    status: Number(status) || 422,
+    data: data || {
+      message: message || 'Business error'
+    }
+  };
+
+  return error;
+}
+
+function getUpdatePtoDataBusinessError(payload) {
+  const normalizedPayload = normalizeLuranaResponseValue(payload);
+  const message = extractLookupMessage(normalizedPayload);
+
+  if (!isKnownUpdateBusinessErrorMessage(message)) {
+    return null;
+  }
+
+  return buildBusinessError(
+    422,
+    'LURANA_UPDATE_BUSINESS_ERROR',
+    `Lurana rechazo la actualizacion de la decision: ${message}`,
+    {
+      message: `Lurana rechazo la actualizacion de la decision: ${message}`,
+      raw: normalizedPayload
+    }
+  );
+}
+
 async function getUserData(username) {
   const rawUsername = normalizeText(username);
   const usernameCandidates = buildUsernameLookupCandidates(rawUsername);
@@ -860,18 +908,36 @@ async function updatePtoData(payload) {
       timeout: 20000,
       maxRedirects: 0
     });
+    const normalizedResponse = normalizeLuranaResponseValue(response.data);
+    const businessError = getUpdatePtoDataBusinessError(normalizedResponse);
+
+    if (businessError) {
+      setLastUpdatePtoData({
+        payload,
+        response: response.data,
+        normalizedResponse,
+        error: businessError.response?.data || businessError.message
+      });
+
+      throw businessError;
+    }
 
     setLastUpdatePtoData({
       payload,
       response: response.data,
+      normalizedResponse,
       error: null
     });
 
     return response.data;
   } catch (error) {
+    if (error?.isBusinessError) {
+      throw error;
+    }
+
     setLastUpdatePtoData({
       payload,
-      response: null,
+      response: error?.response?.data || null,
       error: getDebugErrorValue(error)
     });
 
