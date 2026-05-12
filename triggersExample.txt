@@ -1,0 +1,44 @@
+$leaveTableName = "PS_LEAVE_REQUESTS";
+$requestedId = @@user_requested_id;
+$appNumber = @@APP_NUMBER;
+$appUid = @@APPLICATION;
+$employeeId = @@userID;
+$leaveType = @@var_type_request;
+$leaveTypeLabel = @@var_type_request_label;
+$daysHours      = @@var_days_hours;
+$currentDate = date("Y-m-d H:i:s");
+if ($leaveType == "1") {
+	$leaveReason = "VACACIONES";
+}
+else {
+	$typePermision = @@var_type_permission_label;
+	$leaveReason = 'PERMISOS';
+	$leaveReason = strtoupper($typePermision);
+}
+
+$requestsDate = @@var_requested_date;
+$startDate = @@start_date_requested;
+$endDate = @@end_date_requested;
+$durationHours = @@var_hour_requested;
+$durationDays = @@var_days_requested;
+$totalDays = $durationDays;
+if ($daysHours === "2") {
+    $days = $durationHours / 8;
+    $rounded = ceil($days * 100) / 100;
+    $totalDays = number_format($rounded, 1);
+	$durationDays = 0;
+}
+else {
+	$durationHours = 0;
+}
+$managerId = @@managerID;
+$startDate = date('Y-m-d', strtotime($startDate));
+$endDate = date('Y-m-d', strtotime($endDate));
+
+$userName = @@var_user_name;
+$currentDate = date("Y-m-d H:i:s");
+$insert = "INSERT INTO $leaveTableName 
+           (APP_NUMBER, APP_UID, EMPLOYEE_ID, LEAVE_TYPE, LEAVE_REASON, REQUESTED_AT, START_DATE, END_DATE, DURATION_HOURS, DURATION_DAYS, TOTAL_DAYS, MANAGER_ID, OVERALL_STATUS, CREATED_BY, CREATED_AT )
+		   VALUES 
+           ($appNumber, '$appUid', $employeeId, '$leaveType', '$leaveReason', '$requestsDate', '$startDate', '$endDate', '$durationHours', '$durationDays', '$totalDays', $managerId, '', '$userName', '$currentDate')";
+executeQuery($insert);

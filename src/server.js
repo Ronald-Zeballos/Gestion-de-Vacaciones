@@ -626,14 +626,30 @@ app.post('/processmaker/manager-review', requireProcessmakerTriggerToken, async 
 
 app.get('/test-lurana-user/:username', async (req, res) => {
   try {
-    const data = await getUserData(req.params.username);
+    const requestedUsername = String(req.params.username || '').trim();
+    const requestedPhone = String(req.query.phone || '').trim();
+    const usePhoneLookup = Boolean(requestedPhone);
+    const data = usePhoneLookup
+      ? await getUserDataByUsernameAndPhone(requestedUsername, requestedPhone)
+      : await getUserData(requestedUsername);
+
     res.json({
       ok: true,
+      requestedUsername,
+      requestedPhone: usePhoneLookup ? requestedPhone : '',
+      lookupMode: usePhoneLookup ? 'username_phone' : 'username',
+      lookup: usePhoneLookup ? getLastUserLookup() : null,
       data
     });
   } catch (error) {
     console.error('[TEST][LURANA_USER] Error:', describeHttpError(error));
-    res.status(getHttpStatusFromError(error)).json(buildErrorResponse(error));
+    res.status(getHttpStatusFromError(error)).json({
+      ...buildErrorResponse(error),
+      requestedUsername: String(req.params.username || '').trim(),
+      requestedPhone: String(req.query.phone || '').trim(),
+      lookupMode: String(req.query.phone || '').trim() ? 'username_phone' : 'username',
+      lookup: String(req.query.phone || '').trim() ? getLastUserLookup() : null
+    });
   }
 });
 

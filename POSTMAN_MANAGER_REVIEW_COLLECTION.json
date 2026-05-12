@@ -1,0 +1,252 @@
+{
+  "info": {
+    "_postman_id": "1b8f2a0d-0b42-4f0d-9ef3-4f567733c001",
+    "name": "Lurana WhatsApp Review Demo",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://testlurana.onrender.com"
+    },
+    {
+      "key": "requestId",
+      "value": "app2604281569f0d03e6f08217192550"
+    },
+    {
+      "key": "appUid",
+      "value": "app2604281569f0d03e6f08217192550"
+    },
+    {
+      "key": "appNumber",
+      "value": "120"
+    },
+    {
+      "key": "userId",
+      "value": "4"
+    },
+    {
+      "key": "userName",
+      "value": "gary"
+    },
+    {
+      "key": "username",
+      "value": "Encargado_almacen"
+    },
+    {
+      "key": "phone",
+      "value": "59165900645"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Simulate PM -> Manager Review Trigger",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pro_uid\": \"975459502691b8d12e10f23055859700\",\n  \"appUid\": \"{{appUid}}\",\n  \"appNumber\": \"{{appNumber}}\",\n  \"act_uid\": \"{{appUid}}\",\n  \"app_index\": 2,\n  \"dyn_uid\": \"544190433691b8d13dafd67075313256\",\n  \"var_firstname\": \"Juan\",\n  \"var_lastname\": \"Perez\",\n  \"var_mail\": \"ronaldzeballoscallejas@gmail.com\",\n  \"var_user_name\": \"{{username}}\",\n  \"var_type_request\": 1,\n  \"var_type_request_label\": \"Vacaciones\",\n  \"var_days_hours\": 1,\n  \"var_days_hours_label\": \"Dias\",\n  \"var_type_permission\": \"\",\n  \"var_type_permission_label\": \"\",\n  \"var_start_date\": \"2026-04-28\",\n  \"var_end_date\": \"2026-05-06\",\n  \"var_days_requested\": 7,\n  \"var_requester_comment\": \"visita familiar\",\n  \"var_reviewer\": \"Administrator admin\",\n  \"var_reviewer_user_name\": \"admin\",\n  \"var_reviewer_phone\": \"{{phone}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/processmaker/manager-review",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "processmaker",
+            "manager-review"
+          ]
+        }
+      }
+    },
+    {
+      "name": "2. Create Case In Lurana And Notify Manager",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"pro_uid\": \"975459502691b8d12e10f23055859700\",\n  \"tas_uid\": \"876543635691b8d13344218031759267\",\n  \"variables\": [\n    {\n      \"userId\": \"9999\",\n      \"userName\": \"admin\",\n      \"firstName\": \"X\",\n      \"lastName\": \"Y\",\n      \"email\": \"x@y.com\",\n      \"reviewer\": \"Administrator admin\",\n      \"reviewerUserName\": \"admin\",\n      \"reviewerPhone\": \"{{phone}}\",\n      \"typeRequest\": 1,\n      \"daysHours\": 1,\n      \"typePermission\": 3,\n      \"reason\": \"Prueba para mostrar flujo completo\",\n      \"startDate\": \"14-04-2026\",\n      \"endDate\": \"15-04-2026\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/test-lurana-case?notifyManager=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "test-lurana-case"
+          ],
+          "query": [
+            {
+              "key": "notifyManager",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "3. Approve In Lurana",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"appUid\": \"{{appUid}}\",\n  \"appNumber\": \"{{appNumber}}\",\n  \"userId\": \"{{userId}}\",\n  \"userName\": \"{{userName}}\",\n  \"variables\": [\n    {\n      \"var_action_reviewer\": 1,\n      \"var_action_reviewer_label\": \"Aprobar\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/test-lurana-review",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "test-lurana-review"
+          ]
+        }
+      }
+    },
+    {
+      "name": "4. Send To Correction In Lurana",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"appUid\": \"{{appUid}}\",\n  \"appNumber\": \"{{appNumber}}\",\n  \"userId\": \"{{userId}}\",\n  \"userName\": \"{{userName}}\",\n  \"variables\": [\n    {\n      \"var_action_reviewer\": 2,\n      \"var_action_reviewer_label\": \"Observar\",\n      \"var_comments_reviewer\": \"Falta corregir las fechas de la solicitud\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/test-lurana-review",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "test-lurana-review"
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. Reject In Lurana",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"appUid\": \"{{appUid}}\",\n  \"appNumber\": \"{{appNumber}}\",\n  \"userId\": \"{{userId}}\",\n  \"userName\": \"{{userName}}\",\n  \"variables\": [\n    {\n      \"var_action_reviewer\": 3,\n      \"var_action_reviewer_label\": \"Rechazar\",\n      \"var_comments_reviewer\": \"La solicitud no cumple las politicas vigentes\"\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/test-lurana-review",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "test-lurana-review"
+          ]
+        }
+      }
+    },
+    {
+      "name": "6. Review Summary By Request Id",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/manager-review/request/{{requestId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "manager-review",
+            "request",
+            "{{requestId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "7. ProcessMaker Decision Payload By Request Id",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/manager-review/request/{{requestId}}/processmaker-payload",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "manager-review",
+            "request",
+            "{{requestId}}",
+            "processmaker-payload"
+          ]
+        }
+      }
+    },
+    {
+      "name": "8. Manager Target Preview",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/test-manager-target/{{username}}?reviewer=Administrator%20admin&reviewerPhone={{phone}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "test-manager-target",
+            "{{username}}"
+          ],
+          "query": [
+            {
+              "key": "reviewer",
+              "value": "Administrator admin"
+            },
+            {
+              "key": "reviewerPhone",
+              "value": "{{phone}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "9. Debug Last updatePtoData",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/debug/last-update-ptodata",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "debug",
+            "last-update-ptodata"
+          ]
+        }
+      }
+    }
+  ]
+}
