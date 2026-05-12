@@ -31,3 +31,4 @@ async function getAccessToken() {
 }
 
 module.exports = { getAccessToken };
+// Este módulo maneja la autenticación con Lurana, obteniendo y almacenando el token de acceso.
