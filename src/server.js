@@ -642,14 +642,26 @@ app.get('/test-lurana-user/:username', async (req, res) => {
       data
     });
   } catch (error) {
-    console.error('[TEST][LURANA_USER] Error:', describeHttpError(error));
-    res.status(getHttpStatusFromError(error)).json({
+    const detail = buildErrorResponse(error);
+    const status = getHttpStatusFromError(error);
+    const responsePayload = {
       ...buildErrorResponse(error),
       requestedUsername: String(req.params.username || '').trim(),
       requestedPhone: String(req.query.phone || '').trim(),
       lookupMode: String(req.query.phone || '').trim() ? 'username_phone' : 'username',
       lookup: getLastUserLookup()
-    });
+    };
+
+    console.error('[TEST][LURANA_USER] Error:', describeHttpError(error));
+
+    if (status === 404) {
+      return res.json({
+        ok: false,
+        ...responsePayload
+      });
+    }
+
+    return res.status(status).json(responsePayload);
   }
 });
 

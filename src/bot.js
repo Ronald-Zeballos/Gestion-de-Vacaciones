@@ -3651,13 +3651,22 @@ async function processMessage(message) {
             }
 
             const phoneValidation = validateEmployeePhoneOwnership(employee, from);
+            const shouldEnforcePhoneMatch = lookupMode !== 'username_only';
 
-            if (!phoneValidation.ok) {
+            if (!phoneValidation.ok && shouldEnforcePhoneMatch) {
               await sendTextMessage(
                 from,
                 `Ese username existe, pero este numero de WhatsApp no coincide con el registrado en Lurana (${maskPhoneNumber(phoneValidation.employeePhone)}).`
               );
               return;
+            }
+
+            if (!phoneValidation.ok && !shouldEnforcePhoneMatch) {
+              console.warn('[BOT][GET_USER] Fallback manual por username sin validar coincidencia de telefono:', {
+                username: plainText,
+                from,
+                employeePhone: phoneValidation.employeePhone || ''
+              });
             }
 
             session.employee = employee;
@@ -3667,7 +3676,7 @@ async function processMessage(message) {
 
             await sendButtonsMessage(
               from,
-              `Encontre estos datos${lookupMode === 'username_phone' ? ' validando username y celular' : ''}:\n\n${employeeSummary(employee)}\n\nSon correctos?`,
+              `Encontre estos datos${lookupMode === 'username_phone' ? ' validando username y celular' : ''}:\n\n${employeeSummary(employee)}${lookupMode === 'username_only' ? '\n\nNo pude validar este numero con Lurana, asi que use el lookup por username como respaldo.' : ''}\n\nSon correctos?`,
               [
                 { id: 'profile_ok', title: 'Si' },
                 { id: 'profile_retry', title: 'No' }
