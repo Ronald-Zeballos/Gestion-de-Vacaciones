@@ -237,15 +237,9 @@ function buildUsernameLookupCandidates(username) {
   ].map((item) => normalizeText(item)).filter(Boolean))];
 }
 
-function extractLookupMessage(value, depth = 0) {
+function extractLookupMessageInternal(value, depth = 0) {
   if (!value || depth > 5) {
     return '';
-  }
-
-  const normalizedValue = normalizeLuranaResponseValue(value, depth);
-
-  if (normalizedValue !== value) {
-    return extractLookupMessage(normalizedValue, depth + 1);
   }
 
   if (typeof value === 'string') {
@@ -254,7 +248,7 @@ function extractLookupMessage(value, depth = 0) {
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const message = extractLookupMessage(item, depth + 1);
+      const message = extractLookupMessageInternal(item, depth + 1);
 
       if (message) {
         return message;
@@ -277,7 +271,7 @@ function extractLookupMessage(value, depth = 0) {
   }
 
   for (const nestedValue of Object.values(value)) {
-    const message = extractLookupMessage(nestedValue, depth + 1);
+    const message = extractLookupMessageInternal(nestedValue, depth + 1);
 
     if (message) {
       return message;
@@ -285,6 +279,10 @@ function extractLookupMessage(value, depth = 0) {
   }
 
   return '';
+}
+
+function extractLookupMessage(value) {
+  return extractLookupMessageInternal(normalizeLuranaResponseValue(value), 0);
 }
 
 function isKnownLookupMissMessage(message) {
@@ -306,19 +304,13 @@ function isKnownLookupMissMessage(message) {
   ].some((fragment) => normalizedMessage.includes(fragment));
 }
 
-function payloadHasUserLikeFields(value, depth = 0) {
+function payloadHasUserLikeFieldsInternal(value, depth = 0) {
   if (!value || depth > 5) {
     return false;
   }
 
-  const normalizedValue = normalizeLuranaResponseValue(value, depth);
-
-  if (normalizedValue !== value) {
-    return payloadHasUserLikeFields(normalizedValue, depth + 1);
-  }
-
   if (Array.isArray(value)) {
-    return value.some((item) => payloadHasUserLikeFields(item, depth + 1));
+    return value.some((item) => payloadHasUserLikeFieldsInternal(item, depth + 1));
   }
 
   if (typeof value !== 'object') {
@@ -352,7 +344,13 @@ function payloadHasUserLikeFields(value, depth = 0) {
     }
   }
 
-  return Object.values(value).some((nestedValue) => payloadHasUserLikeFields(nestedValue, depth + 1));
+  return Object.values(value).some((nestedValue) =>
+    payloadHasUserLikeFieldsInternal(nestedValue, depth + 1)
+  );
+}
+
+function payloadHasUserLikeFields(value) {
+  return payloadHasUserLikeFieldsInternal(normalizeLuranaResponseValue(value), 0);
 }
 
 function isLookupBusinessMiss(payload) {
