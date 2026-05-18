@@ -267,9 +267,11 @@ function collectEmployeePhoneCandidates(value, depth = 0, found = []) {
   for (const [key, nestedValue] of Object.entries(value)) {
     const normalizedKey = normalizeLookupKey(key);
     const isPhoneLikeKey = EMPLOYEE_PHONE_KEY_TOKENS.some((token) => normalizedKey.includes(token));
+    const isManagerLikeKey = MANAGER_ROLE_KEY_TOKENS.some((token) => normalizedKey.includes(token));
 
     if (
       isPhoneLikeKey &&
+      !isManagerLikeKey &&
       (typeof nestedValue === 'string' || typeof nestedValue === 'number')
     ) {
       found.push(String(nestedValue));
@@ -1423,6 +1425,15 @@ function buildCreateCasePayload(employee, request) {
     'reviewer_phone',
     'var_reviewer_phone'
   ]);
+  const employeePhone = getEmployeeFieldValue(employee, [
+    'phone',
+    'var_phone',
+    'cellular',
+    'celular',
+    'var_cellular',
+    'mobile',
+    'whatsapp'
+  ]);
 
   return {
     pro_uid: config.luranaProUid,
@@ -1434,6 +1445,9 @@ function buildCreateCasePayload(employee, request) {
         firstName: employee.firstName || employee.userName || '',
         lastName: employee.lastName || '',
         email: employee.email || '',
+        phone: employeePhone,
+        cellular: employeePhone,
+        var_cellular: employeePhone,
         department,
         departmentLabel,
         position,
@@ -1469,6 +1483,16 @@ function buildCreateCasePayload(employee, request) {
 }
 
 function buildTestEmployeePayload(rawEmployee = {}, fallbackPhone = '') {
+  const employeePhone = normalizePhoneNumber(
+    rawEmployee.phone ||
+    rawEmployee.var_phone ||
+    rawEmployee.var_cellular ||
+    rawEmployee.cellular ||
+    rawEmployee.celular ||
+    fallbackPhone,
+    config.defaultCountryCode
+  );
+
   return {
     userId: normalizeText(rawEmployee.userId || rawEmployee.id || '4'),
     userName: normalizeText(rawEmployee.userName || rawEmployee.username || 'prueba.bot'),
@@ -1494,10 +1518,7 @@ function buildTestEmployeePayload(rawEmployee = {}, fallbackPhone = '') {
       rawEmployee.reviewerPhone || rawEmployee.var_reviewer_phone || '',
       config.defaultCountryCode
     ),
-    phone: normalizePhoneNumber(
-      rawEmployee.phone || fallbackPhone || getManagerNotificationPhone(),
-      config.defaultCountryCode
-    )
+    phone: employeePhone
   };
 }
 
@@ -1612,6 +1633,16 @@ function resolveProcessmakerPermissionCode(variables) {
 
 function resolveProcessmakerEmployeePhone(payload, variables) {
   const candidates = [
+    variables.var_cellular,
+    variables.var_phone,
+    variables.phone,
+    variables.cellular,
+    variables.celular,
+    payload.var_cellular,
+    payload.var_phone,
+    payload.phone,
+    payload.cellular,
+    payload.celular,
     ...collectEmployeePhoneCandidates(variables),
     ...collectEmployeePhoneCandidates(payload)
   ];
@@ -2597,7 +2628,7 @@ async function createManagerReviewTestRequest(input = {}) {
     normalizeText(input.createCase || input.create_case).toLowerCase()
   );
   const employeePhone = normalizePhoneNumber(
-    input.phone || input?.employee?.phone || getManagerNotificationPhone(),
+    input.phone || input?.employee?.phone || '',
     config.defaultCountryCode
   );
   const employee = buildTestEmployeePayload(input.employee || {}, employeePhone);

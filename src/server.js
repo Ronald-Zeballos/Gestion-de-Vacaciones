@@ -280,6 +280,10 @@ function isTruthyFlag(value) {
   return ['1', 'true', 'yes', 'si', 'on'].includes(String(value || '').trim().toLowerCase());
 }
 
+function isFalsyFlag(value) {
+  return ['0', 'false', 'no', 'off'].includes(String(value || '').trim().toLowerCase());
+}
+
 function getManagerDecisionCode(status) {
   const normalizedStatus = String(status || '').trim().toLowerCase();
 
@@ -949,10 +953,11 @@ app.post('/test-lurana-review', async (req, res) => {
 
 app.post('/test-manager-notification', async (req, res) => {
   try {
-    const shouldCreateCase =
-      isTruthyFlag(req.query.createCase) ||
-      isTruthyFlag(req.body?.createCase) ||
-      isTruthyFlag(req.body?.create_case);
+    const hasExplicitCreateCaseFalse =
+      isFalsyFlag(req.query.createCase) ||
+      isFalsyFlag(req.body?.createCase) ||
+      isFalsyFlag(req.body?.create_case);
+    const shouldCreateCase = !hasExplicitCreateCaseFalse;
     const result = await createManagerReviewTestRequest({
       ...(req.body || {}),
       createCase: shouldCreateCase
